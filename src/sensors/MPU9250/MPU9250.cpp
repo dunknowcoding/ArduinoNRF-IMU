@@ -28,6 +28,9 @@ bool MPU9250::begin() {
 bool MPU9250::beginI2C(TwoWire& wire, uint8_t address) {
   i2cWire_ = &wire;
   bus_.beginI2C(wire, address, clockHz_);
+  // Clear a jammed bus left by a previous crashed run or a debugger halt, so a
+  // cold start is reliable even if a slave is holding SDA low.
+  bus_.recoverBus();
   if (!isConnected()) {
     return false;
   }
@@ -67,6 +70,11 @@ bool MPU9250::reset() {
     return false;
   }
   delay(100);  // reset takes effect; registers return to power-on defaults
+  // A device reset can momentarily disturb the bus; clear any jam before the
+  // first post-reset access.
+  if (bus_.isI2C()) {
+    bus_.recoverBus();
+  }
   // Wake from sleep and select the best available clock (PLL when ready).
   if (bus_.writeRegister(PWR_MGMT_1, PWR1_CLKSEL_AUTO) != IMUStatus::Ok) {
     return false;

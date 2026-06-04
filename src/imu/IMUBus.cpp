@@ -65,6 +65,46 @@ IMUStatus IMUBus::updateRegister(uint8_t reg, uint8_t mask, uint8_t value) {
   return writeRegister(reg, current);
 }
 
+IMUStatus IMUBus::recoverBus() {
+  if (mode_ != Mode::I2C || wire_ == nullptr) {
+    return IMUStatus::Ok;  // nothing to recover on SPI
+  }
+  const uint8_t sda = wire_->pinSDA();
+  const uint8_t scl = wire_->pinSCL();
+
+  // Release the peripheral's hold on the lines so we can bit-bang them.
+  wire_->end();
+  pinMode(scl, OUTPUT);
+  pinMode(sda, INPUT_PULLUP);
+
+  // Pulse SCL until the slave lets SDA float high (max 9 bits + a margin).
+  bool released = (digitalRead(sda) == HIGH);
+  for (uint8_t i = 0; i < 18 && !released; ++i) {
+    digitalWrite(scl, LOW);
+    delayMicroseconds(5);
+    digitalWrite(scl, HIGH);
+    delayMicroseconds(5);
+    released = (digitalRead(sda) == HIGH);
+  }
+
+  // Issue a STOP condition (SDA low -> high while SCL is high).
+  pinMode(sda, OUTPUT);
+  digitalWrite(sda, LOW);
+  delayMicroseconds(5);
+  digitalWrite(scl, HIGH);
+  delayMicroseconds(5);
+  digitalWrite(sda, HIGH);
+  delayMicroseconds(5);
+
+  pinMode(sda, INPUT_PULLUP);
+  pinMode(scl, INPUT_PULLUP);
+
+  // Bring the hardware I2C back up at the configured clock.
+  wire_->begin();
+  wire_->setClock(clockHz_);
+  return released ? IMUStatus::Ok : IMUStatus::BusError;
+}
+
 IMUStatus IMUBus::ping() {
   if (mode_ != Mode::I2C || wire_ == nullptr) {
     return IMUStatus::Ok;  // SPI has no addressed ACK to probe

@@ -86,6 +86,15 @@ class IMUBus {
    */
   IMUStatus ping();
 
+  /**
+   * Manually clock the I2C bus free. If a previous run (or a debugger halt)
+   * was interrupted mid-transfer, an I2C slave can be left holding SDA low,
+   * which jams every following transaction. This pulses SCL until the slave
+   * releases SDA and then issues a STOP. Safe to call before begin(); a no-op
+   * in SPI mode. Returns Ok if SDA is released (or no recovery was needed).
+   */
+  IMUStatus recoverBus();
+
  private:
   enum class Mode : uint8_t { None, I2C, SPI };
 
