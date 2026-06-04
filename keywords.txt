@@ -1,0 +1,61 @@
+# NiusIMU keyword highlighting for the Arduino IDE
+# (fields are separated by a single TAB)
+
+#######################################
+# Datatypes (KEYWORD1)
+#######################################
+
+MPU9250	KEYWORD1
+IMUSensor	KEYWORD1
+IMUBus	KEYWORD1
+IMUData	KEYWORD1
+IMUCalibration	KEYWORD1
+IMUStatus	KEYWORD1
+Vec3	KEYWORD1
+RawSample	KEYWORD1
+
+#######################################
+# Methods and Functions (KEYWORD2)
+#######################################
+
+begin	KEYWORD2
+beginI2C	KEYWORD2
+beginSPI	KEYWORD2
+whoAmI	KEYWORD2
+isConnected	KEYWORD2
+update	KEYWORD2
+data	KEYWORD2
+accelG	KEYWORD2
+accelMs2	KEYWORD2
+gyroDps	KEYWORD2
+gyroRps	KEYWORD2
+magUT	KEYWORD2
+temperatureC	KEYWORD2
+timestamp	KEYWORD2
+hasMagnetometer	KEYWORD2
+name	KEYWORD2
+setAccelRangeG	KEYWORD2
+setGyroRangeDps	KEYWORD2
+setLowPassFilterHz	KEYWORD2
+setSampleRateHz	KEYWORD2
+calibrateGyro	KEYWORD2
+calibrateAccel	KEYWORD2
+calibrateMag	KEYWORD2
+getCalibration	KEYWORD2
+setCalibration	KEYWORD2
+clearCalibration	KEYWORD2
+magWhoAmI	KEYWORD2
+enableMagnetometer	KEYWORD2
+setGyroDlpfConfig	KEYWORD2
+setAccelDlpfConfig	KEYWORD2
+setDataReadyInterrupt	KEYWORD2
+dataReady	KEYWORD2
+sleep	KEYWORD2
+reset	KEYWORD2
+readRaw	KEYWORD2
+
+#######################################
+# Constants (LITERAL1)
+#######################################
+
+NIUSIMU_VERSION	LITERAL1
