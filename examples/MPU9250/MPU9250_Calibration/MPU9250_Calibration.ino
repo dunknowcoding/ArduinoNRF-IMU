@@ -8,7 +8,8 @@
 
   Steps it runs:
     1. Gyro bias   - board still and flat.
-    2. Accel bias  - board still and LEVEL (Z pointing up).
+    2. Accel bias  - board still in any fixed orientation (it auto-detects
+       which axis gravity is on, so it need not be perfectly level).
     3. Magnetometer hard/soft iron - slowly rotate the board through every
        orientation (a "figure-8" in the air) for 15 seconds.
 
@@ -60,7 +61,7 @@ void setup() {
   Serial.println("   gyro done.");
 
   // --- 2. Accelerometer ---
-  waitForEnter("\n2) Keep it LEVEL and still (Z up). Press Enter to start.");
+  waitForEnter("\n2) Keep it STILL in any fixed orientation. Press Enter to start.");
   imu.calibrateAccel(500);
   Serial.println("   accel done.");
 

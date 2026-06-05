@@ -116,8 +116,9 @@ class IMUSensor {
   virtual bool calibrateGyro(uint16_t samples = 200);
 
   /**
-   * Measure accelerometer bias with the board resting level and still. Assumes
-   * +1 g on Z; stores per-axis bias (and leaves scale at 1.0).
+   * Measure accelerometer bias with the board resting still in any orientation.
+   * Auto-detects which axis carries gravity (so it works whether the board is
+   * Z-up, Z-down, on its side, ...) and stores per-axis bias (scale stays 1.0).
    */
   virtual bool calibrateAccel(uint16_t samples = 200);
 

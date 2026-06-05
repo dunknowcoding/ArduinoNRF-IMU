@@ -64,9 +64,24 @@ bool IMUSensor::calibrateAccel(uint16_t samples) {
     return false;
   }
 
-  // Board assumed level and still: X,Y should read 0 g and Z should read +1 g.
+  // The board is still in SOME orientation: exactly one axis carries gravity
+  // (+/-1 g) and the other two read ~0. Detect the dominant (gravity) axis
+  // instead of assuming Z-up, so calibration is correct however the board is
+  // mounted - e.g. a board whose Z points down reads -1 g, not +1 g.
+  const Vec3 avg{sum.x / taken, sum.y / taken, sum.z / taken};
+  const float ax = (avg.x < 0.0f) ? -avg.x : avg.x;
+  const float ay = (avg.y < 0.0f) ? -avg.y : avg.y;
+  const float az = (avg.z < 0.0f) ? -avg.z : avg.z;
+  Vec3 expected{0.0f, 0.0f, 0.0f};
+  if (ax >= ay && ax >= az) {
+    expected.x = (avg.x >= 0.0f) ? 1.0f : -1.0f;
+  } else if (ay >= az) {
+    expected.y = (avg.y >= 0.0f) ? 1.0f : -1.0f;
+  } else {
+    expected.z = (avg.z >= 0.0f) ? 1.0f : -1.0f;
+  }
   cal_.accelBias =
-      Vec3{sum.x / taken, sum.y / taken, (sum.z / taken) - 1.0f};
+      Vec3{avg.x - expected.x, avg.y - expected.y, avg.z - expected.z};
   cal_.accelScale = Vec3{1, 1, 1};
   return true;
 }
