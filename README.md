@@ -17,21 +17,37 @@ drivers get exercised by real devices, not just loopback tests.
   are one call away.
 - **Calibrate once, restore forever.** Gyro, accel and magnetometer calibration
   produce a struct you print and paste back — no waving the board at every boot.
+- **Whole boards in one object.** `<GY91.h>` brings up the MPU + BMP280 together
+  (`accelG()`, `gyroDps()`, `pressureHpa()`, `altitudeM()`); `<GY9250.h>` is the
+  9-axis board. Or use the bare chips directly.
 - **Pluggable sensors as folders.** Drop a driver in `src/sensors/<NAME>/`, add a
   one-line forwarding header, and `#include <NAME.h>` works. See
   [docs/ADDING_A_SENSOR.md](docs/ADDING_A_SENSOR.md).
 - **Chip-specific power kept available.** The MPU-9250 driver still exposes its
   magnetometer control, raw DLPF codes, data-ready interrupt and raw registers.
 
-## Supported sensors
+## Supported sensors and boards
 
-| Sensor | Bus | Accel | Gyro | Mag | Driver |
-| ------ | --- | ----- | ---- | --- | ------ |
-| MPU-9250 / GY-9250 | I2C, SPI* | ✅ | ✅ | ✅ (AK8963) | [`src/sensors/MPU9250`](src/sensors/MPU9250) |
+Chips live in `src/sensors/`; multi-chip breakout boards in `src/boards/`. Pick
+whichever name matches what you bought — `<GY91.h>` for the board, or the
+individual chip headers if you wired chips up yourself.
 
-\* On SPI only accel + gyro are read; the magnetometer is wired up for the I2C
-path. Over I2C the AK8963 is reached through the MPU's internal I2C master (not
-bypass), so a dead/absent magnetometer can never jam the accel/gyro bus.
+| Include | Device | Accel | Gyro | Mag | Pressure |
+| ------- | ------ | ----- | ---- | --- | -------- |
+| `<GY91.h>` | GY-91 board (MPU-9250/6500 + BMP280) | ✅ | ✅ | ✅† | ✅ |
+| `<GY9250.h>` | GY-9250 board (MPU-9250) | ✅ | ✅ | ✅ (AK8963) | — |
+| `<MPU9250.h>` | MPU-9250 chip (9-axis) | ✅ | ✅ | ✅ (AK8963) | — |
+| `<MPU6500.h>` | MPU-6500 chip (6-axis) | ✅ | ✅ | — | — |
+| `<BMP280.h>` | BMP280 barometer | — | — | — | ✅ (+ temp) |
+
+† Many GY-91 boards actually carry a 6-axis MPU-6500 (`WHO_AM_I` 0x70, no
+magnetometer). The MPU-9250 driver auto-detects this and runs as a 6-axis part;
+`hasMagnetometer()` tells you which one you have.
+
+The MPU-9250 is an MPU-6500 plus an AK8963, so its driver simply **extends**
+`MPU6500`. Over I2C the AK8963 is reached through the MPU's internal I2C master
+(not bypass), so a dead/absent magnetometer can never jam the accel/gyro bus. On
+SPI only accel + gyro are read.
 
 ## Install
 
@@ -42,7 +58,7 @@ your Arduino `libraries/` directory, or compile an example directly:
 arduino-cli compile \
   --fqbn arduinonrf:nrf52:promicro_nrf52840 \
   --library <path-to>/ArduinoNRF-IMU \
-  <path-to>/ArduinoNRF-IMU/examples/MPU9250/MPU9250_Basic
+  <path-to>/ArduinoNRF-IMU/examples/GY91/GY91_Basic
 ```
 
 ## Wiring (ProMicro nRF52840, default I2C)
@@ -80,9 +96,13 @@ void loop() {
 | Example | What it shows |
 | ------- | ------------- |
 | [`I2C_Scanner`](examples/I2C_Scanner) | Find devices on the bus; first thing to run on a new board |
-| [`MPU9250/MPU9250_Basic`](examples/MPU9250/MPU9250_Basic) | Minimal read loop |
-| [`MPU9250/MPU9250_Calibration`](examples/MPU9250/MPU9250_Calibration) | Guided gyro/accel/mag calibration that prints paste-ready code |
-| [`MPU9250/MPU9250_Advanced`](examples/MPU9250/MPU9250_Advanced) | Custom ranges, DLPF, sample rate, data-ready, raw registers |
+| [`GY91/GY91_Basic`](examples/GY91/GY91_Basic) | Whole GY-91 (IMU + barometer) in one quick read loop |
+| [`GY91/GY91_Advanced`](examples/GY91/GY91_Advanced) | Full config + guided calibration of every sensor, with on-screen hints |
+| [`GY9250/GY9250_Basic`](examples/GY9250/GY9250_Basic) | Minimal 9-axis read loop |
+| [`GY9250/GY9250_Calibration`](examples/GY9250/GY9250_Calibration) | Guided gyro/accel/mag calibration that prints paste-ready code |
+| [`GY9250/GY9250_Advanced`](examples/GY9250/GY9250_Advanced) | Custom ranges, DLPF, sample rate, data-ready, raw registers |
+| [`MPU6500/MPU6500_Basic`](examples/MPU6500/MPU6500_Basic) | Bare 6-axis accelerometer + gyroscope |
+| [`BMP280/BMP280_Basic`](examples/BMP280/BMP280_Basic) | Pressure, temperature and altitude, with sea-level reference |
 
 ## The common API (every sensor)
 

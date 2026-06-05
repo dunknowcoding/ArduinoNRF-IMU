@@ -1,5 +1,5 @@
 /*
-  MPU9250_Advanced - Custom ranges, filtering, data-ready and raw values.
+  GY9250_Advanced - Custom ranges, filtering, data-ready and raw values.
 
   Shows the chip-specific configuration on top of the common API:
     * pick full-scale ranges and an output data rate
@@ -10,9 +10,9 @@
   Wiring: same default I2C as the other examples (SDA=D6, SCL=D7).
   Open Serial Monitor at 115200 baud.
 */
-#include <MPU9250.h>
+#include <GY9250.h>
 
-MPU9250 imu;
+GY9250 imu;
 
 void setup() {
   Serial.begin(115200);
@@ -21,7 +21,7 @@ void setup() {
   }
 
   if (!imu.begin()) {
-    Serial.println("MPU9250 not found.");
+    Serial.println("GY-9250 not found.");
     while (true) {
       delay(1000);
     }
@@ -55,7 +55,7 @@ void loop() {
 
   // The raw struct exposes the unscaled 16-bit registers - handy when you are
   // debugging the bus and want to see exactly what came off the wire.
-  MPU9250::RawSample raw;
+  GY9250::RawSample raw;
   imu.readRaw(raw);
 
   Serial.print(a.x, 2); Serial.print(' ');

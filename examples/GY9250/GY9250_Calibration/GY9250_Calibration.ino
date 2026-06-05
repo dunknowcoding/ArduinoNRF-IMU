@@ -1,5 +1,5 @@
 /*
-  MPU9250_Calibration - Calibrate once, paste the numbers, never re-do it.
+  GY9250_Calibration - Calibrate once, paste the numbers, never re-do it.
 
   This sketch walks you through all three calibrations and then prints a ready
   made block of C++ you can copy into your own sketch. Restoring calibration
@@ -15,9 +15,9 @@
 
   Open Serial Monitor at 115200 baud and follow the prompts.
 */
-#include <MPU9250.h>
+#include <GY9250.h>
 
-MPU9250 imu;
+GY9250 imu;
 
 // Small helper: wait for the user to press Enter in the Serial Monitor.
 void waitForEnter(const char* prompt) {
@@ -47,13 +47,13 @@ void setup() {
   }
 
   if (!imu.begin()) {
-    Serial.println("MPU9250 not found - check wiring.");
+    Serial.println("GY-9250 not found - check wiring.");
     while (true) {
       delay(1000);
     }
   }
 
-  Serial.println("=== MPU9250 calibration ===");
+  Serial.println("=== GY-9250 calibration ===");
 
   // --- 1. Gyro ---
   waitForEnter("\n1) Place the board flat and STILL. Press Enter to start.");

@@ -2,6 +2,11 @@
   MPU9250.h - NiusIMU driver for the InvenSense MPU-9250 (and the common
   AliExpress "GY-9250" breakout).
 
+  The MPU-9250 is an MPU-6500 (accel + gyro) plus an AK8963 magnetometer, so
+  this driver simply EXTENDS MPU6500 with the magnetometer. Everything inertial
+  (ranges, filters, sample rate, gyro/accel calibration, sleep, interrupts)
+  comes from MPU6500 unchanged; the extras declared here are magnetometer-only.
+
   Quick start (I2C, the GY-9250's default wiring):
 
       #include <MPU9250.h>
@@ -9,7 +14,7 @@
 
       void setup() {
         Serial.begin(115200);
-        imu.begin();                 // Wire @ 0x68, sensible defaults
+        imu.begin();                 // Wire @ 0x68, sensible defaults, mag on
         imu.calibrateGyro();         // keep the board still for a second
       }
 
@@ -17,92 +22,53 @@
         imu.update();
         Vec3 a = imu.accelG();       // g
         Vec3 g = imu.gyroDps();      // deg/s
-        Vec3 m = imu.magUT();        // uT
+        Vec3 m = imu.magUT();        // uT (zero if the board has no AK8963)
         delay(50);
       }
 
-  Everything in IMUSensor (units, calibration, snapshot) works here unchanged.
-  Methods declared in THIS header on top of the base class are MPU-specific
-  extras (magnetometer control, raw DLPF config, interrupt pin, sleep).
+  On a board that turns out to be a plain MPU-6500 (WHO_AM_I 0x70, no AK8963),
+  begin() still succeeds; hasMagnetometer() is then false and magUT() reads 0.
 */
 #ifndef NIUSIMU_MPU9250_H
 #define NIUSIMU_MPU9250_H
 
-#include "../../imu/IMUSensor.h"
+#include "../MPU6500/MPU6500.h"
 #include "MPU9250_Registers.h"
 
 namespace nimu {
 
-class MPU9250 : public IMUSensor {
+class MPU9250 : public MPU6500 {
  public:
   MPU9250() { name_ = "MPU9250"; }
 
-  // ----------------------------------------------------- unified interface --
-  bool begin() override;  ///< Wire @ 0x68, +/-4 g, +/-500 dps, 100 Hz, mag on
-  bool beginI2C(TwoWire& wire, uint8_t address) override;
-  bool beginSPI(SPIClass& spi, uint8_t csPin) override;
-  uint8_t whoAmI() override;
-  bool isConnected() override;
-  bool update() override;
-
-  bool setAccelRangeG(uint16_t maxG) override;
-  bool setGyroRangeDps(uint16_t maxDps) override;
-  bool setLowPassFilterHz(uint16_t hz) override;
-  bool setSampleRateHz(uint16_t hz) override;
-  bool calibrateMag(uint16_t durationMs = 15000) override;
-
-  // ------------------------------------------------------- MPU-only extras --
+  // --------------------------------------------------------- magnetometer ---
 
   /** AK8963 die id (0x48). 0 if the magnetometer is absent/unreachable. */
   uint8_t magWhoAmI();
 
   /**
-   * Turn the magnetometer on or off. begin() enables it automatically on chips
+   * Turn the magnetometer on or off. begin() enables it automatically on boards
    * that have one; this lets you save power or skip it on MPU-6500 clones.
    * @return false if no magnetometer is present.
    */
   bool enableMagnetometer(bool enable = true);
 
   /**
-   * Write the raw 3-bit gyro/temperature DLPF_CFG field (CONFIG register).
-   * Prefer setLowPassFilterHz(); use this only when you want an exact code.
-   * @param cfg 0..7 (see datasheet table 5.2).
+   * Magnetometer hard/soft-iron calibration. Rotate the board slowly through
+   * every orientation (a figure-8 in the air) for the whole duration. Returns
+   * false if there is no magnetometer or too little motion was seen.
    */
-  bool setGyroDlpfConfig(uint8_t cfg);
+  bool calibrateMag(uint16_t durationMs = 15000) override;
 
-  /** Write the raw 3-bit accel A_DLPF_CFG field (ACCEL_CONFIG2 register). */
-  bool setAccelDlpfConfig(uint8_t cfg);
+  // The unscaled magnetometer bytes also appear in MPU6500::RawSample via the
+  // readRaw() override below, so MPU6500's readRaw/diagnostics keep working.
+  bool readRaw(RawSample& out) override;
 
-  /**
-   * Route a data-ready pulse to the INT pin. Combine with an interrupt on the
-   * MCU side to read only when a fresh sample exists.
-   * @param enable  true to drive INT on each new sample.
-   * @param latch   true keeps INT asserted until INT_STATUS is read.
-   */
-  bool setDataReadyInterrupt(bool enable, bool latch = false);
-
-  /** True if INT_STATUS reports a new sample is ready. */
-  bool dataReady();
-
-  /** Put the chip to sleep (low power, no measurements) or wake it. */
-  bool sleep(bool enable = true);
-
-  /** Full device reset, then re-apply the active configuration. */
-  bool reset();
-
-  // -- Raw 16-bit register values (no scaling/calibration), for diagnostics. --
-  struct RawSample {
-    int16_t ax, ay, az;
-    int16_t gx, gy, gz;
-    int16_t temp;
-    int16_t mx, my, mz;
-    bool magValid;
-  };
-  /** Read the unscaled register values directly - useful for bus debugging. */
-  bool readRaw(RawSample& out);
+ protected:
+  bool initExtras() override;             ///< bring up the AK8963 (master mode)
+  void processExtra(const RawSample& raw) override;  ///< scale + map the mag
 
  private:
-  bool configureDefaults();
   bool initMagnetometer();
   bool readMagRaw(int16_t& mx, int16_t& my, int16_t& mz, bool& valid);
 
@@ -116,16 +82,7 @@ class MPU9250 : public IMUSensor {
   /** Point SLV0 at the AK8963 data block for automatic per-sample reads. */
   bool magConfigureSlv0(bool enable);
 
-  TwoWire* i2cWire_ = nullptr;
-  uint32_t clockHz_ = 400000;
-
-  // Cached scale factors so update() avoids re-reading config registers.
-  float accelLsbPerG_ = 8192.0f;     // default +/-4 g
-  float gyroLsbPerDps_ = 65.5f;      // default +/-500 dps
-  Vec3 magAsa_{1.0f, 1.0f, 1.0f};    // AK8963 fuse-ROM sensitivity adjustment
-  uint16_t accelRangeG_ = 4;
-  uint16_t gyroRangeDps_ = 500;
-  uint16_t sampleRateHz_ = 100;
+  Vec3 magAsa_{1.0f, 1.0f, 1.0f};  // AK8963 fuse-ROM sensitivity adjustment
   bool magPresent_ = false;
   bool magEnabled_ = false;
 };

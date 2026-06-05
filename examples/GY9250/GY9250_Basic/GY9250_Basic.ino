@@ -1,17 +1,18 @@
 /*
-  MPU9250_Basic - The simplest way to read a GY-9250 / MPU-9250.
+  GY9250_Basic - The simplest way to read a GY-9250 (9-DOF MPU-9250 board).
 
   Prints acceleration (g), rotation rate (deg/s), magnetic field (uT) and
-  temperature (C) a few times per second.
+  temperature (C) a few times per second. GY9250 is the same device as the
+  MPU9250 driver under the breakout's name - use whichever you prefer.
 
   Wiring (ArduinoNRF ProMicro nRF52840 default I2C):
-    SDA -> SDA (D6)    SCL -> SCL (D7)    VCC -> 3V3    GND -> GND
+    SDA -> SDA (silk D6)    SCL -> SCL (silk D7)    VCC -> 3V3    GND -> GND
 
   Open Serial Monitor at 115200 baud.
 */
-#include <MPU9250.h>
+#include <GY9250.h>
 
-MPU9250 imu;
+GY9250 imu;
 
 void setup() {
   Serial.begin(115200);
@@ -21,13 +22,13 @@ void setup() {
 
   // Start the sensor on the default I2C bus with sensible defaults.
   if (!imu.begin()) {
-    Serial.println("MPU9250 not found - check wiring and power.");
+    Serial.println("GY-9250 not found - check wiring and power.");
     while (true) {
       delay(1000);
     }
   }
 
-  Serial.print("MPU9250 ready. WHO_AM_I = 0x");
+  Serial.print("GY-9250 ready. WHO_AM_I = 0x");
   Serial.println(imu.whoAmI(), HEX);
   Serial.print("Magnetometer: ");
   Serial.println(imu.hasMagnetometer() ? "yes" : "no");

@@ -6,6 +6,10 @@
 #######################################
 
 MPU9250	KEYWORD1
+MPU6500	KEYWORD1
+BMP280	KEYWORD1
+GY91	KEYWORD1
+GY9250	KEYWORD1
 IMUSensor	KEYWORD1
 IMUBus	KEYWORD1
 IMUData	KEYWORD1
@@ -53,6 +57,22 @@ dataReady	KEYWORD2
 sleep	KEYWORD2
 reset	KEYWORD2
 readRaw	KEYWORD2
+pressurePa	KEYWORD2
+pressureHpa	KEYWORD2
+altitudeM	KEYWORD2
+setSeaLevelPressureHpa	KEYWORD2
+seaLevelPressureHpa	KEYWORD2
+calibrateAltitude	KEYWORD2
+setSampling	KEYWORD2
+chipId	KEYWORD2
+imu	KEYWORD2
+baro	KEYWORD2
+imuOk	KEYWORD2
+baroOk	KEYWORD2
+imuTemperatureC	KEYWORD2
+baroTemperatureC	KEYWORD2
+getImuCalibration	KEYWORD2
+setImuCalibration	KEYWORD2
 
 #######################################
 # Constants (LITERAL1)

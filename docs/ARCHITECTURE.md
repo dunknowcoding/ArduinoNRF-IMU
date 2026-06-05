@@ -7,13 +7,14 @@ The library has three layers. Everything a sketch sees is the top one.
       |
       v
   +-----------------------------+   <- public include forwarders (src/*.h)
-  |  MPU9250  (other sensors…)  |       e.g. src/MPU9250.h -> sensors/MPU9250/
+  |  GY91, GY9250  (boards)     |       src/GY91.h -> boards/GY91/  (compose chips)
+  |  MPU9250, MPU6500, BMP280   |       src/MPU9250.h -> sensors/MPU9250/
   +-----------------------------+
-      |  implements
+      |  IMUs implement                 (BMP280 is a barometer: its own small class)
       v
   +-----------------------------+   <- the unified interface (src/imu/)
   |  IMUSensor (abstract)       |       common API, units, calibration maths
-  |  IMUTypes  (Vec3, IMUData…) |
+  |  IMUTypes  (Vec3, IMUData…) |       MPU9250 : MPU6500 : IMUSensor
   +-----------------------------+
       |  talks through
       v
@@ -24,6 +25,20 @@ The library has three layers. Everything a sketch sees is the top one.
       v
    Wire / SPI  (ArduinoNRF core)
 ```
+
+## Chips, boards, and the odd sensor out
+
+- **Chips** live in `src/sensors/<NAME>/`. The inertial ones derive from
+  `IMUSensor`. Where one chip is a superset of another they inherit: `MPU9250`
+  **extends** `MPU6500` and adds only the AK8963 magnetometer, so all the
+  inertial code exists once. The `BMP280` is a barometer, not an IMU, so it does
+  not derive from `IMUSensor` — it has its own small surface but still reads/writes
+  through the same `IMUBus`.
+- **Boards** live in `src/boards/<NAME>/` and compose chips. `GY91` owns an
+  `MPU9250` (which auto-degrades to 6-axis on MPU-6500 boards) and a `BMP280` and
+  forwards a friendly whole-board API; `GY9250` is just an `MPU9250` under the
+  breakout's name. Each board/chip gets a one-line `src/<NAME>.h` forwarder so a
+  sketch writes `#include <NAME.h>`.
 
 ## Why this shape
 
