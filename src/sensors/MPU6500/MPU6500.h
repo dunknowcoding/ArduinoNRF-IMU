@@ -37,6 +37,17 @@ class MPU6500 : public IMUSensor {
  public:
   MPU6500() { name_ = "MPU6500"; }
 
+  // FSYNC routing targets for setExternalSync(), exposed on the class so a
+  // sketch can write MPU6500::FSYNC_TEMP without the internal namespace.
+  static constexpr uint8_t FSYNC_OFF = mpu6500::EXT_SYNC_DISABLED;
+  static constexpr uint8_t FSYNC_TEMP = mpu6500::EXT_SYNC_TEMP_OUT;
+  static constexpr uint8_t FSYNC_GYRO_X = mpu6500::EXT_SYNC_GYRO_XOUT;
+  static constexpr uint8_t FSYNC_GYRO_Y = mpu6500::EXT_SYNC_GYRO_YOUT;
+  static constexpr uint8_t FSYNC_GYRO_Z = mpu6500::EXT_SYNC_GYRO_ZOUT;
+  static constexpr uint8_t FSYNC_ACCEL_X = mpu6500::EXT_SYNC_ACCEL_XOUT;
+  static constexpr uint8_t FSYNC_ACCEL_Y = mpu6500::EXT_SYNC_ACCEL_YOUT;
+  static constexpr uint8_t FSYNC_ACCEL_Z = mpu6500::EXT_SYNC_ACCEL_ZOUT;
+
   // ----------------------------------------------------- unified interface --
   bool begin() override;  ///< Wire @ 0x68, +/-4 g, +/-500 dps, 100 Hz
   bool beginI2C(TwoWire& wire, uint8_t address) override;
@@ -79,6 +90,30 @@ class MPU6500 : public IMUSensor {
   /** Full device reset, then re-apply the active configuration. */
   bool reset();
 
+  // ----------------------------------------------------------- bus speed ---
+
+  /**
+   * Change the bus clock at runtime. On SPI this lets you configure the chip at
+   * a safe 1 MHz and then burst sensor data far faster (the MPU tolerates up to
+   * ~20 MHz for data reads, but only ~1 MHz for register writes - so set this
+   * high only for reading, or restore it before changing configuration).
+   */
+  void setBusClockHz(uint32_t hz);
+  uint32_t busClockHz() const { return clockHz_; }
+
+  // -------------------------------------------------------------- FSYNC -----
+
+  /**
+   * Route the FSYNC pin into the LSB of one sensor output (an MPU6500::FSYNC_*
+   * target, or FSYNC_OFF). After each update() the captured FSYNC level is then
+   * available from fsyncLevel(); use it to time-stamp an external event against
+   * the IMU samples. Note: the chosen axis loses its least-significant bit.
+   */
+  bool setExternalSync(uint8_t fsyncTarget);
+
+  /** FSYNC level captured by the last update(): 0 or 1, or -1 if FSYNC is off. */
+  int fsyncLevel() const { return fsyncBit_; }
+
   // -- Raw 16-bit register values (no scaling/calibration), for diagnostics. --
   struct RawSample {
     int16_t ax, ay, az;
@@ -109,6 +144,9 @@ class MPU6500 : public IMUSensor {
   uint16_t accelRangeG_ = 4;
   uint16_t gyroRangeDps_ = 500;
   uint16_t sampleRateHz_ = 100;
+
+  uint8_t extSyncTarget_ = mpu6500::EXT_SYNC_DISABLED;  // FSYNC routing, if any
+  int8_t fsyncBit_ = -1;  // FSYNC level from the last update() (-1 = off)
 };
 
 }  // namespace nimu

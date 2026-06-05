@@ -57,6 +57,10 @@ dataReady	KEYWORD2
 sleep	KEYWORD2
 reset	KEYWORD2
 readRaw	KEYWORD2
+setBusClockHz	KEYWORD2
+busClockHz	KEYWORD2
+setExternalSync	KEYWORD2
+fsyncLevel	KEYWORD2
 pressurePa	KEYWORD2
 pressureHpa	KEYWORD2
 altitudeM	KEYWORD2

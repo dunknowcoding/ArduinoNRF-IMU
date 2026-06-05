@@ -75,6 +75,19 @@ static constexpr uint8_t INTCFG_LATCH_INT = 0x20;  // latch INT until cleared
 // USER_CTRL bits
 static constexpr uint8_t USERCTRL_I2C_MST_EN = 0x20;   // run the internal master
 static constexpr uint8_t USERCTRL_I2C_MST_RST = 0x02;  // reset the master logic
+static constexpr uint8_t USERCTRL_I2C_IF_DIS = 0x10;   // disable I2C slave (SPI only)
+
+// CONFIG bits[5:3] EXT_SYNC_SET: route the FSYNC pin into a sensor LSB so an
+// external event can be time-stamped against the samples. 0 disables it.
+static constexpr uint8_t EXT_SYNC_MASK = 0x38;
+static constexpr uint8_t EXT_SYNC_DISABLED = 0x00 << 3;
+static constexpr uint8_t EXT_SYNC_TEMP_OUT = 0x01 << 3;   // FSYNC -> TEMP_OUT_L[0]
+static constexpr uint8_t EXT_SYNC_GYRO_XOUT = 0x02 << 3;  // FSYNC -> GYRO_XOUT_L[0]
+static constexpr uint8_t EXT_SYNC_GYRO_YOUT = 0x03 << 3;
+static constexpr uint8_t EXT_SYNC_GYRO_ZOUT = 0x04 << 3;
+static constexpr uint8_t EXT_SYNC_ACCEL_XOUT = 0x05 << 3;
+static constexpr uint8_t EXT_SYNC_ACCEL_YOUT = 0x06 << 3;
+static constexpr uint8_t EXT_SYNC_ACCEL_ZOUT = 0x07 << 3;
 
 // I2C_MST_CTRL: 0x0D selects the 400 kHz aux-bus clock; WAIT_FOR_ES delays
 // data-ready until the external read finishes so frames stay coherent.

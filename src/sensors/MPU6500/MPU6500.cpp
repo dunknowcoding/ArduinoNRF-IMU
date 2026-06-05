@@ -39,7 +39,14 @@ bool MPU6500::beginSPI(SPIClass& spi, uint8_t csPin) {
   if (!isConnected()) {
     return false;
   }
-  return reset() && configureDefaults() && initExtras();
+  if (!reset()) {
+    return false;
+  }
+  // Pin the part to SPI: disable the I2C slave interface so activity on the
+  // (now unused) I2C pads cannot disturb register access. Recommended by the
+  // datasheet whenever SPI is used.
+  bus_.updateRegister(USER_CTRL, USERCTRL_I2C_IF_DIS, USERCTRL_I2C_IF_DIS);
+  return configureDefaults() && initExtras();
 }
 
 uint8_t MPU6500::whoAmI() {
@@ -114,9 +121,38 @@ bool MPU6500::update() {
 
   data_.temperature = raw.temp / kTempSensitivity + kTempOffsetC;
 
+  // FSYNC, if routed: the external pin's level is latched into the LSB of the
+  // selected output register each sample. Pull it out before the user sees it.
+  if (extSyncTarget_ != EXT_SYNC_DISABLED) {
+    int16_t src = 0;
+    switch (extSyncTarget_) {
+      case EXT_SYNC_TEMP_OUT:   src = raw.temp; break;
+      case EXT_SYNC_GYRO_XOUT:  src = raw.gx;   break;
+      case EXT_SYNC_GYRO_YOUT:  src = raw.gy;   break;
+      case EXT_SYNC_GYRO_ZOUT:  src = raw.gz;   break;
+      case EXT_SYNC_ACCEL_XOUT: src = raw.ax;   break;
+      case EXT_SYNC_ACCEL_YOUT: src = raw.ay;   break;
+      case EXT_SYNC_ACCEL_ZOUT: src = raw.az;   break;
+      default: break;
+    }
+    fsyncBit_ = src & 0x1;
+  }
+
   processExtra(raw);  // 9-axis driver writes data_.mag; no-op on a 6-axis part
   data_.timestamp = micros();
   return true;
+}
+
+void MPU6500::setBusClockHz(uint32_t hz) {
+  clockHz_ = hz;
+  bus_.setClockHz(hz);
+}
+
+bool MPU6500::setExternalSync(uint8_t fsyncTarget) {
+  extSyncTarget_ = fsyncTarget & EXT_SYNC_MASK;
+  fsyncBit_ = (extSyncTarget_ == EXT_SYNC_DISABLED) ? -1 : 0;
+  return bus_.updateRegister(CONFIG, EXT_SYNC_MASK, extSyncTarget_) ==
+         IMUStatus::Ok;
 }
 
 // ----------------------------------------------------------- configuration --
