@@ -50,9 +50,17 @@ class GY91 {
 
   // ------------------------------------------------------------ lifecycle --
 
-  /** Bring up both chips on the given bus at their default GY-91 addresses. */
+  /**
+   * Bring up both chips on the given bus. The BMP280 is taken at 0x76; the MPU
+   * address is auto-detected (AD0 low 0x68, then high 0x69) so the board works
+   * whether the ADO pad is tied low, high or left floating. For any other
+   * combination (e.g. BMP280 at 0x77) call beginI2C() with explicit addresses.
+   */
   bool begin(TwoWire& wire = Wire) {
-    return beginI2C(wire, bmp280::kAddrPrimary, mpu6500::kAddrAD0Low);
+    if (beginI2C(wire, bmp280::kAddrPrimary, mpu6500::kAddrAD0Low)) {
+      return true;
+    }
+    return beginI2C(wire, bmp280::kAddrPrimary, mpu6500::kAddrAD0High);
   }
 
   /**
