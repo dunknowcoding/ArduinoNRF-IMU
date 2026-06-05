@@ -29,7 +29,9 @@ drivers get exercised by real devices, not just loopback tests.
 | ------ | --- | ----- | ---- | --- | ------ |
 | MPU-9250 / GY-9250 | I2C, SPI* | ✅ | ✅ | ✅ (AK8963) | [`src/sensors/MPU9250`](src/sensors/MPU9250) |
 
-\* On SPI the magnetometer is not available (it needs the MPU's I2C bypass).
+\* On SPI only accel + gyro are read; the magnetometer is wired up for the I2C
+path. Over I2C the AK8963 is reached through the MPU's internal I2C master (not
+bypass), so a dead/absent magnetometer can never jam the accel/gyro bus.
 
 ## Install
 

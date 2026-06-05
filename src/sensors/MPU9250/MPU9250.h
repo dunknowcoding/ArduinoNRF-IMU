@@ -106,9 +106,16 @@ class MPU9250 : public IMUSensor {
   bool initMagnetometer();
   bool readMagRaw(int16_t& mx, int16_t& my, int16_t& mz, bool& valid);
 
-  // The AK8963 magnetometer sits at its own I2C address (0x0C), reached over
-  // the same wires once the MPU's I2C bypass is on, so it gets its own bus.
-  IMUBus magBus_;
+  // --- AK8963 access via the MPU's internal I2C master (never bypass) ---
+  /** Wait for the SLV4 single transfer to finish; false on timeout or NACK. */
+  bool magWaitSlv4();
+  /** Single-byte write to an AK8963 register over the aux bus (via SLV4). */
+  bool magWriteReg(uint8_t reg, uint8_t value);
+  /** Single-byte read from an AK8963 register over the aux bus (via SLV4). */
+  bool magReadReg(uint8_t reg, uint8_t& value);
+  /** Point SLV0 at the AK8963 data block for automatic per-sample reads. */
+  bool magConfigureSlv0(bool enable);
+
   TwoWire* i2cWire_ = nullptr;
   uint32_t clockHz_ = 400000;
 

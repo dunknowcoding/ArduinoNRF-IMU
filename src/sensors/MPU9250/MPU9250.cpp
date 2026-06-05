@@ -102,31 +102,39 @@ bool MPU9250::initMagnetometer() {
     return true;  // SPI mode: no magnetometer, but begin() still succeeds
   }
 
-  // Expose the AK8963 on the main I2C bus: disable the MPU's internal I2C
-  // master and turn on bypass so 0x0C answers directly.
-  bus_.updateRegister(USER_CTRL, 0x20, 0x00);  // I2C_MST_EN = 0
-  bus_.writeRegister(INT_PIN_CFG, INTCFG_BYPASS_EN);
+  // Make sure bypass is OFF, then (re)start the MPU's internal I2C master on
+  // the auxiliary bus. The AK8963 is reached ONLY through this master, so a
+  // dead/absent magnetometer can never jam the main accel/gyro bus.
+  bus_.writeRegister(INT_PIN_CFG, 0x00);  // bypass disabled
+  bus_.updateRegister(USER_CTRL, USERCTRL_I2C_MST_RST, USERCTRL_I2C_MST_RST);
+  delay(10);
+  bus_.updateRegister(USER_CTRL, USERCTRL_I2C_MST_EN, USERCTRL_I2C_MST_EN);
+  bus_.writeRegister(I2C_MST_CTRL, I2C_MST_WAIT_FOR_ES | I2C_MST_CLK_400);
   delay(10);
 
-  magBus_.beginI2C(*i2cWire_, kMagAddr, clockHz_);
+  // Probe over the aux bus. A clone without a working AK8963 just NACKs here;
+  // we return success with magPresent_ = false so accel + gyro still run.
   uint8_t wia = 0;
-  if (magBus_.readRegister(MAG_WIA, wia) != IMUStatus::Ok ||
-      wia != kMagWhoAmI) {
-    return true;  // genuine MPU-6500 clone with no magnetometer: not an error
+  if (!magReadReg(MAG_WIA, wia) || wia != kMagWhoAmI) {
+    return true;
   }
 
   // Soft-reset the AK8963, then read its fuse-ROM sensitivity adjustment.
-  magBus_.writeRegister(MAG_CNTL2, 0x01);
+  magWriteReg(MAG_CNTL2, 0x01);
   delay(10);
-  magBus_.writeRegister(MAG_CNTL1, MAG_MODE_POWERDOWN);
+  magWriteReg(MAG_CNTL1, MAG_MODE_POWERDOWN);
   delay(10);
-  magBus_.writeRegister(MAG_CNTL1, MAG_MODE_FUSE_ROM);
+  magWriteReg(MAG_CNTL1, MAG_MODE_FUSE_ROM);
   delay(10);
   uint8_t asa[3] = {128, 128, 128};
-  magBus_.readRegisters(MAG_ASAX, asa, 3);
+  magReadReg(MAG_ASAX, asa[0]);
+  magReadReg(MAG_ASAX + 1, asa[1]);
+  magReadReg(MAG_ASAX + 2, asa[2]);
   // Per datasheet: adjusted = raw * ((ASA - 128) / 256 + 1).
   magAsa_ = Vec3{(asa[0] - 128) / 256.0f + 1.0f, (asa[1] - 128) / 256.0f + 1.0f,
                  (asa[2] - 128) / 256.0f + 1.0f};
+  magWriteReg(MAG_CNTL1, MAG_MODE_POWERDOWN);
+  delay(10);
 
   magPresent_ = true;
   return enableMagnetometer(true);
@@ -136,13 +144,15 @@ bool MPU9250::enableMagnetometer(bool enable) {
   if (!magPresent_) {
     return false;
   }
-  magBus_.writeRegister(MAG_CNTL1, MAG_MODE_POWERDOWN);
+  magWriteReg(MAG_CNTL1, MAG_MODE_POWERDOWN);
   delay(10);
   if (enable) {
     // Continuous 100 Hz, 16-bit resolution.
-    magBus_.writeRegister(MAG_CNTL1, MAG_MODE_CONT_100HZ | MAG_BIT_16);
+    magWriteReg(MAG_CNTL1, MAG_MODE_CONT_100HZ | MAG_BIT_16);
     delay(10);
   }
+  // Drive (or stop) the automatic per-sample reads of the AK8963 data block.
+  magConfigureSlv0(enable);
   magEnabled_ = enable;
   hasMag_ = enable;
   return true;
@@ -153,7 +163,7 @@ uint8_t MPU9250::magWhoAmI() {
     return 0;
   }
   uint8_t wia = 0;
-  magBus_.readRegister(MAG_WIA, wia);
+  magReadReg(MAG_WIA, wia);
   return wia;
 }
 
@@ -163,26 +173,71 @@ bool MPU9250::readMagRaw(int16_t& mx, int16_t& my, int16_t& mz, bool& valid) {
   if (!magEnabled_) {
     return false;
   }
-  uint8_t st1 = 0;
-  if (magBus_.readRegister(MAG_ST1, st1) != IMUStatus::Ok) {
+  // SLV0 mirrors the AK8963's ST1 + 6 data bytes + ST2 into EXT_SENS_DATA each
+  // sample, so a fresh magnetometer reading is just one main-bus burst read.
+  // buf: [0]=ST1, [1..6]=HXL..HZH, [7]=ST2.
+  uint8_t buf[8];
+  if (bus_.readRegisters(EXT_SENS_DATA_00, buf, 8) != IMUStatus::Ok) {
     return false;
   }
-  if (!(st1 & MAG_ST1_DRDY)) {
+  if (!(buf[0] & MAG_ST1_DRDY)) {
     return true;  // no new sample yet - not an error, just nothing fresh
   }
-  // Read 6 data bytes plus ST2; ST2 MUST be read to release the data latch.
-  uint8_t buf[7];
-  if (magBus_.readRegisters(MAG_HXL, buf, 7) != IMUStatus::Ok) {
-    return false;
-  }
-  if (buf[6] & MAG_ST2_HOFL) {
+  if (buf[7] & MAG_ST2_HOFL) {
     return true;  // magnetic overflow this sample; values discarded
   }
-  mx = le16(&buf[0]);
-  my = le16(&buf[2]);
-  mz = le16(&buf[4]);
+  mx = le16(&buf[1]);
+  my = le16(&buf[3]);
+  mz = le16(&buf[5]);
   valid = true;
   return true;
+}
+
+// ----------------------------------------- AK8963 over the internal master --
+
+bool MPU9250::magWaitSlv4() {
+  // SLV4 single transfers complete at the sample-rate cadence; 100 ms covers
+  // even a slow 8 Hz config. I2C_MST_STATUS latches DONE until it is read.
+  const uint32_t start = millis();
+  while (millis() - start < 100) {
+    uint8_t status = 0;
+    if (bus_.readRegister(I2C_MST_STATUS, status) != IMUStatus::Ok) {
+      return false;
+    }
+    if (status & I2C_MST_SLV4_DONE) {
+      return (status & I2C_MST_SLV4_NACK) == 0;  // NACK => no device answered
+    }
+  }
+  return false;
+}
+
+bool MPU9250::magWriteReg(uint8_t reg, uint8_t value) {
+  bus_.writeRegister(I2C_SLV4_ADDR, kMagAddr);  // bit7 clear => write
+  bus_.writeRegister(I2C_SLV4_REG, reg);
+  bus_.writeRegister(I2C_SLV4_DO, value);
+  bus_.writeRegister(I2C_SLV4_CTRL, I2C_SLV_EN);
+  return magWaitSlv4();
+}
+
+bool MPU9250::magReadReg(uint8_t reg, uint8_t& value) {
+  bus_.writeRegister(I2C_SLV4_ADDR, kMagAddr | I2C_READ_FLAG);
+  bus_.writeRegister(I2C_SLV4_REG, reg);
+  bus_.writeRegister(I2C_SLV4_CTRL, I2C_SLV_EN);
+  if (!magWaitSlv4()) {
+    return false;
+  }
+  return bus_.readRegister(I2C_SLV4_DI, value) == IMUStatus::Ok;
+}
+
+bool MPU9250::magConfigureSlv0(bool enable) {
+  if (!enable) {
+    return bus_.writeRegister(I2C_SLV0_CTRL, 0x00) == IMUStatus::Ok;
+  }
+  // Auto-read 8 bytes (ST1 + HXL..HZH + ST2) from the AK8963 every sample.
+  // Reading through ST2 is mandatory - it releases the AK8963's data latch.
+  bus_.writeRegister(I2C_SLV0_ADDR, kMagAddr | I2C_READ_FLAG);
+  bus_.writeRegister(I2C_SLV0_REG, MAG_ST1);
+  return bus_.writeRegister(I2C_SLV0_CTRL, I2C_SLV_EN | 0x08) == IMUStatus::Ok;
 }
 
 // -------------------------------------------------------------- data read ---

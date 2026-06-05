@@ -37,7 +37,7 @@ read a sample, set ranges/filter/rate) and stores engineering-unit values into
 `data_`. The base class does the rest.
 
 **Unique features are not flattened away.** A capability only one chip has (the
-MPU's magnetometer bypass, raw DLPF codes, FIFO, a DMP…) is added as extra
+MPU's aux-bus magnetometer, raw DLPF codes, FIFO, a DMP…) is added as extra
 methods on that driver, not forced into the shared interface. Common things are
 shared; special things stay special.
 
