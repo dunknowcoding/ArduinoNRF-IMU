@@ -158,22 +158,37 @@ bool MPU9250::magWaitSlv4() {
   return false;
 }
 
-bool MPU9250::magWriteReg(uint8_t reg, uint8_t value) {
-  bus_.writeRegister(I2C_SLV4_ADDR, kMagAddr);  // bit7 clear => write
+// Public aux-bus (EDA/ECL) access, via the master's single-shot SLV4 slot.
+bool MPU9250::auxWriteRegister(uint8_t address, uint8_t reg, uint8_t value) {
+  bus_.writeRegister(I2C_SLV4_ADDR, address & 0x7F);  // bit7 clear => write
   bus_.writeRegister(I2C_SLV4_REG, reg);
   bus_.writeRegister(I2C_SLV4_DO, value);
   bus_.writeRegister(I2C_SLV4_CTRL, I2C_SLV_EN);
   return magWaitSlv4();
 }
 
-bool MPU9250::magReadReg(uint8_t reg, uint8_t& value) {
-  bus_.writeRegister(I2C_SLV4_ADDR, kMagAddr | I2C_READ_FLAG);
+bool MPU9250::auxReadRegister(uint8_t address, uint8_t reg, uint8_t& value) {
+  bus_.writeRegister(I2C_SLV4_ADDR, (address & 0x7F) | I2C_READ_FLAG);
   bus_.writeRegister(I2C_SLV4_REG, reg);
   bus_.writeRegister(I2C_SLV4_CTRL, I2C_SLV_EN);
   if (!magWaitSlv4()) {
     return false;
   }
   return bus_.readRegister(I2C_SLV4_DI, value) == IMUStatus::Ok;
+}
+
+bool MPU9250::auxPing(uint8_t address) {
+  uint8_t scratch = 0;
+  return auxReadRegister(address, 0x00, scratch);  // ACK on a register-0 read
+}
+
+// The AK8963 helpers are now thin wrappers over the generic aux-bus access.
+bool MPU9250::magWriteReg(uint8_t reg, uint8_t value) {
+  return auxWriteRegister(kMagAddr, reg, value);
+}
+
+bool MPU9250::magReadReg(uint8_t reg, uint8_t& value) {
+  return auxReadRegister(kMagAddr, reg, value);
 }
 
 bool MPU9250::magConfigureSlv0(bool enable) {

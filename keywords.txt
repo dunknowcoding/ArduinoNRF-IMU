@@ -61,6 +61,9 @@ setBusClockHz	KEYWORD2
 busClockHz	KEYWORD2
 setExternalSync	KEYWORD2
 fsyncLevel	KEYWORD2
+auxReadRegister	KEYWORD2
+auxWriteRegister	KEYWORD2
+auxPing	KEYWORD2
 pressurePa	KEYWORD2
 pressureHpa	KEYWORD2
 altitudeM	KEYWORD2

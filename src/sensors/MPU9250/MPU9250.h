@@ -60,6 +60,22 @@ class MPU9250 : public MPU6500 {
    */
   bool calibrateMag(uint16_t durationMs = 15000) override;
 
+  // ------------------------------------------ auxiliary I2C (EDA / ECL) -----
+  //
+  // The MPU-9250 has a second I2C bus on its EDA/ECL pins, driven by the chip's
+  // own I2C master. The AK8963 magnetometer lives there, but on breakouts that
+  // expose EDA/ECL you can wire your OWN I2C sensors to it and reach them
+  // through the MPU - useful to hang extra sensors off one MCU bus, or to keep
+  // them on an isolated bus. These work after begin() over I2C (begin enables
+  // the master); they are unavailable in SPI mode.
+
+  /** Read one register from a device on the aux bus. False on bus NACK. */
+  bool auxReadRegister(uint8_t address, uint8_t reg, uint8_t& value);
+  /** Write one register to a device on the aux bus. False on bus NACK. */
+  bool auxWriteRegister(uint8_t address, uint8_t reg, uint8_t value);
+  /** True if a device acknowledges its address on the aux bus. */
+  bool auxPing(uint8_t address);
+
   // The unscaled magnetometer bytes also appear in MPU6500::RawSample via the
   // readRaw() override below, so MPU6500's readRaw/diagnostics keep working.
   bool readRaw(RawSample& out) override;
