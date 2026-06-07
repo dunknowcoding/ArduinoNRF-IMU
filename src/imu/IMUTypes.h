@@ -1,5 +1,5 @@
 /*
-  IMUTypes.h - Common data types shared by every IMU in the NiusIMU library.
+  IMUTypes.h - Common data types shared by every IMU in the ArduinoNRF-IMU library.
 
   These types are deliberately small, plain structs so they are cheap to copy
   and easy to print. Every concrete sensor driver (MPU9250, ICM20948, ...)
@@ -12,8 +12,8 @@
     - Magnetic field ........ microtesla   (uT)
     - Temperature ........... degrees C
 */
-#ifndef NIUSIMU_IMUTYPES_H
-#define NIUSIMU_IMUTYPES_H
+#ifndef ARDUINONRF_IMU_IMUTYPES_H
+#define ARDUINONRF_IMU_IMUTYPES_H
 
 #include <Arduino.h>
 
@@ -101,4 +101,4 @@ inline const char* toString(IMUStatus s) {
 
 }  // namespace nimu
 
-#endif  // NIUSIMU_IMUTYPES_H
+#endif  // ARDUINONRF_IMU_IMUTYPES_H

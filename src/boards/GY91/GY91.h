@@ -1,5 +1,5 @@
 /*
-  GY91.h - NiusIMU driver for the GY-91 10-DOF breakout.
+  GY91.h - ArduinoNRF-IMU driver for the GY-91 10-DOF breakout.
 
   The GY-91 carries two chips on one I2C bus:
     * an InvenSense MPU-9250 / MPU-6500 (accel + gyro, and a magnetometer on the
@@ -36,8 +36,8 @@
         delay(100);
       }
 */
-#ifndef NIUSIMU_GY91_H
-#define NIUSIMU_GY91_H
+#ifndef ARDUINONRF_IMU_GY91_H
+#define ARDUINONRF_IMU_GY91_H
 
 #include "../../sensors/BMP280/BMP280.h"
 #include "../../sensors/MPU9250/MPU9250.h"
@@ -136,4 +136,4 @@ class GY91 {
 
 using nimu::GY91;
 
-#endif  // NIUSIMU_GY91_H
+#endif  // ARDUINONRF_IMU_GY91_H

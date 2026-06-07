@@ -1,5 +1,5 @@
 /*
-  GY9250.h - NiusIMU board class for the GY-9250 9-DOF breakout.
+  GY9250.h - ArduinoNRF-IMU board class for the GY-9250 9-DOF breakout.
 
   The GY-9250 is a single InvenSense MPU-9250 (accel + gyro + AK8963
   magnetometer) on a breakout board, so this board class is simply the MPU9250
@@ -26,8 +26,8 @@
         delay(50);
       }
 */
-#ifndef NIUSIMU_GY9250_H
-#define NIUSIMU_GY9250_H
+#ifndef ARDUINONRF_IMU_GY9250_H
+#define ARDUINONRF_IMU_GY9250_H
 
 #include "../../sensors/MPU9250/MPU9250.h"
 
@@ -43,4 +43,4 @@ class GY9250 : public MPU9250 {
 
 using nimu::GY9250;
 
-#endif  // NIUSIMU_GY9250_H
+#endif  // ARDUINONRF_IMU_GY9250_H

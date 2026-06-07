@@ -14,8 +14,8 @@
   with it. The internal master keeps the AK8963 isolated, so a bad magnetometer
   can never jam the main bus.
 */
-#ifndef NIUSIMU_MPU9250_REGISTERS_H
-#define NIUSIMU_MPU9250_REGISTERS_H
+#ifndef ARDUINONRF_IMU_MPU9250_REGISTERS_H
+#define ARDUINONRF_IMU_MPU9250_REGISTERS_H
 
 #include <stdint.h>
 
@@ -51,4 +51,4 @@ static constexpr float kMagScaleUT = 4912.0f / 32760.0f;  // ~0.15 uT/LSB
 }  // namespace mpu9250
 }  // namespace nimu
 
-#endif  // NIUSIMU_MPU9250_REGISTERS_H
+#endif  // ARDUINONRF_IMU_MPU9250_REGISTERS_H

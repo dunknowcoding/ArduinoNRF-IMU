@@ -1,4 +1,4 @@
-# NiusIMU keyword highlighting for the Arduino IDE
+# ArduinoNRF-IMU keyword highlighting for the Arduino IDE
 # (fields are separated by a single TAB)
 
 #######################################
@@ -85,4 +85,4 @@ setImuCalibration	KEYWORD2
 # Constants (LITERAL1)
 #######################################
 
-NIUSIMU_VERSION	LITERAL1
+ARDUINONRF_IMU_VERSION	LITERAL1

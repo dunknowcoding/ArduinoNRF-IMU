@@ -14,8 +14,8 @@
   Only the registers the drivers actually use are listed, each with a short
   note. Bit fields used in more than one place get a named constant.
 */
-#ifndef NIUSIMU_MPU6500_REGISTERS_H
-#define NIUSIMU_MPU6500_REGISTERS_H
+#ifndef ARDUINONRF_IMU_MPU6500_REGISTERS_H
+#define ARDUINONRF_IMU_MPU6500_REGISTERS_H
 
 #include <stdint.h>
 
@@ -126,4 +126,4 @@ static constexpr float kTempOffsetC = 21.0f;
 }  // namespace mpu6500
 }  // namespace nimu
 
-#endif  // NIUSIMU_MPU6500_REGISTERS_H
+#endif  // ARDUINONRF_IMU_MPU6500_REGISTERS_H

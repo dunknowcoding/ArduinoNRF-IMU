@@ -8,9 +8,9 @@
   here at the src/ root so users can write `#include <NAME.h>`.
   See docs/ADDING_A_SENSOR.md.
 */
-#ifndef NIUSIMU_PUBLIC_MPU9250_H
-#define NIUSIMU_PUBLIC_MPU9250_H
+#ifndef ARDUINONRF_IMU_PUBLIC_MPU9250_H
+#define ARDUINONRF_IMU_PUBLIC_MPU9250_H
 
 #include "sensors/MPU9250/MPU9250.h"
 
-#endif  // NIUSIMU_PUBLIC_MPU9250_H
+#endif  // ARDUINONRF_IMU_PUBLIC_MPU9250_H

@@ -1,5 +1,5 @@
 /*
-  MPU9250.h - NiusIMU driver for the InvenSense MPU-9250 (and the common
+  MPU9250.h - ArduinoNRF-IMU driver for the InvenSense MPU-9250 (and the common
   AliExpress "GY-9250" breakout).
 
   The MPU-9250 is an MPU-6500 (accel + gyro) plus an AK8963 magnetometer, so
@@ -29,8 +29,8 @@
   On a board that turns out to be a plain MPU-6500 (WHO_AM_I 0x70, no AK8963),
   begin() still succeeds; hasMagnetometer() is then false and magUT() reads 0.
 */
-#ifndef NIUSIMU_MPU9250_H
-#define NIUSIMU_MPU9250_H
+#ifndef ARDUINONRF_IMU_MPU9250_H
+#define ARDUINONRF_IMU_MPU9250_H
 
 #include "../MPU6500/MPU6500.h"
 #include "MPU9250_Registers.h"
@@ -112,4 +112,4 @@ using nimu::IMUData;
 using nimu::MPU9250;
 using nimu::Vec3;
 
-#endif  // NIUSIMU_MPU9250_H
+#endif  // ARDUINONRF_IMU_MPU9250_H

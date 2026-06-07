@@ -4,9 +4,9 @@
   One-line forwarder to the board class in src/boards/GY91/. Include this to get
   accel + gyro (+ mag on genuine boards) AND pressure/altitude from one object.
 */
-#ifndef NIUSIMU_PUBLIC_GY91_H
-#define NIUSIMU_PUBLIC_GY91_H
+#ifndef ARDUINONRF_IMU_PUBLIC_GY91_H
+#define ARDUINONRF_IMU_PUBLIC_GY91_H
 
 #include "boards/GY91/GY91.h"
 
-#endif  // NIUSIMU_PUBLIC_GY91_H
+#endif  // ARDUINONRF_IMU_PUBLIC_GY91_H

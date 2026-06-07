@@ -1,5 +1,5 @@
 /*
-  NiusIMU.h - Umbrella header for the NiusIMU library.
+  ArduinoNRF_IMU.h - Umbrella header for the ArduinoNRF-IMU library.
 
   A unified, friendly IMU library for the ArduinoNRF board package. Each chip
   lives under src/sensors/ and each multi-chip breakout under src/boards/; the
@@ -18,16 +18,16 @@
   helper, the base class) without a particular sensor - for instance when
   writing your own driver. See docs/ADDING_A_SENSOR.md.
 */
-#ifndef NIUSIMU_H
-#define NIUSIMU_H
+#ifndef ARDUINONRF_IMU_H
+#define ARDUINONRF_IMU_H
 
-#define NIUSIMU_VERSION_MAJOR 0
-#define NIUSIMU_VERSION_MINOR 2
-#define NIUSIMU_VERSION_PATCH 0
-#define NIUSIMU_VERSION "0.2.0"
+#define ARDUINONRF_IMU_VERSION_MAJOR 0
+#define ARDUINONRF_IMU_VERSION_MINOR 2
+#define ARDUINONRF_IMU_VERSION_PATCH 0
+#define ARDUINONRF_IMU_VERSION "0.2.0"
 
 #include "imu/IMUBus.h"
 #include "imu/IMUSensor.h"
 #include "imu/IMUTypes.h"
 
-#endif  // NIUSIMU_H
+#endif  // ARDUINONRF_IMU_H

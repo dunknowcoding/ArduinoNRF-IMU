@@ -14,8 +14,8 @@
   splits long reads into <=32-byte register-addressed bursts automatically, so
   drivers can ask for a full FIFO frame without worrying about the limit.
 */
-#ifndef NIUSIMU_IMUBUS_H
-#define NIUSIMU_IMUBUS_H
+#ifndef ARDUINONRF_IMU_IMUBUS_H
+#define ARDUINONRF_IMU_IMUBUS_H
 
 #include <Arduino.h>
 #include <SPI.h>
@@ -114,4 +114,4 @@ class IMUBus {
 
 }  // namespace nimu
 
-#endif  // NIUSIMU_IMUBUS_H
+#endif  // ARDUINONRF_IMU_IMUBUS_H

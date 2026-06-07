@@ -5,9 +5,9 @@
   barometer fitted alongside the MPU-6500 on GY-91 boards; for the whole board
   in one object include <GY91.h>.
 */
-#ifndef NIUSIMU_PUBLIC_BMP280_H
-#define NIUSIMU_PUBLIC_BMP280_H
+#ifndef ARDUINONRF_IMU_PUBLIC_BMP280_H
+#define ARDUINONRF_IMU_PUBLIC_BMP280_H
 
 #include "sensors/BMP280/BMP280.h"
 
-#endif  // NIUSIMU_PUBLIC_BMP280_H
+#endif  // ARDUINONRF_IMU_PUBLIC_BMP280_H

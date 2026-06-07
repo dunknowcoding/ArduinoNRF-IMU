@@ -1,4 +1,4 @@
-# NiusIMU
+# ArduinoNRF-IMU
 
 A **unified, friendly IMU library** for the [ArduinoNRF](../ArduinoNRF) board
 package. One common API across every IMU, with chip-specific extras where a

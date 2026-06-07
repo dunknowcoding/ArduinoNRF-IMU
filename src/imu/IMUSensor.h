@@ -20,8 +20,8 @@
   each read store engineering-unit values into `data_`. This base class applies
   calibration and serves every accessor and unit conversion.
 */
-#ifndef NIUSIMU_IMUSENSOR_H
-#define NIUSIMU_IMUSENSOR_H
+#ifndef ARDUINONRF_IMU_IMUSENSOR_H
+#define ARDUINONRF_IMU_IMUSENSOR_H
 
 #include <Arduino.h>
 
@@ -164,4 +164,4 @@ class IMUSensor {
 
 }  // namespace nimu
 
-#endif  // NIUSIMU_IMUSENSOR_H
+#endif  // ARDUINONRF_IMU_IMUSENSOR_H

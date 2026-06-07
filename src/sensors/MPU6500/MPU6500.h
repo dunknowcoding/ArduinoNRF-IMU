@@ -1,5 +1,5 @@
 /*
-  MPU6500.h - NiusIMU driver for the InvenSense MPU-6500 6-axis IMU
+  MPU6500.h - ArduinoNRF-IMU driver for the InvenSense MPU-6500 6-axis IMU
   (accelerometer + gyroscope + die temperature).
 
   The MPU-6500 is the chip on many GY-91 boards and the inertial core of the
@@ -25,8 +25,8 @@
         delay(50);
       }
 */
-#ifndef NIUSIMU_MPU6500_H
-#define NIUSIMU_MPU6500_H
+#ifndef ARDUINONRF_IMU_MPU6500_H
+#define ARDUINONRF_IMU_MPU6500_H
 
 #include "../../imu/IMUSensor.h"
 #include "MPU6500_Registers.h"
@@ -158,4 +158,4 @@ using nimu::IMUData;
 using nimu::MPU6500;
 using nimu::Vec3;
 
-#endif  // NIUSIMU_MPU6500_H
+#endif  // ARDUINONRF_IMU_MPU6500_H

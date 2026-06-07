@@ -28,7 +28,7 @@ void setup() {
   Wire.setClock(400000);
 
   Serial.println();
-  Serial.println("NiusIMU I2C scanner");
+  Serial.println("ArduinoNRF-IMU I2C scanner");
   Serial.print("SDA pin = ");
   Serial.print(Wire.pinSDA());
   Serial.print("   SCL pin = ");

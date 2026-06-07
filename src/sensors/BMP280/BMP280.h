@@ -1,5 +1,5 @@
 /*
-  BMP280.h - NiusIMU driver for the Bosch BMP280 barometric pressure + die
+  BMP280.h - ArduinoNRF-IMU driver for the Bosch BMP280 barometric pressure + die
   temperature sensor (the second chip on a GY-91 board).
 
   It is not an inertial sensor, so it does not derive from IMUSensor; it has its
@@ -31,8 +31,8 @@
   is derived from pressure against a sea-level reference; enter your local QNH
   with setSeaLevelPressureHpa() - that is the user-facing calibration step.
 */
-#ifndef NIUSIMU_BMP280_H
-#define NIUSIMU_BMP280_H
+#ifndef ARDUINONRF_IMU_BMP280_H
+#define ARDUINONRF_IMU_BMP280_H
 
 #include <Arduino.h>
 #include <SPI.h>
@@ -150,4 +150,4 @@ class BMP280 {
 
 using nimu::BMP280;
 
-#endif  // NIUSIMU_BMP280_H
+#endif  // ARDUINONRF_IMU_BMP280_H

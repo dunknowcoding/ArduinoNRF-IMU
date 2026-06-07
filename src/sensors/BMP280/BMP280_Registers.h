@@ -6,8 +6,8 @@
   coefficients (0x88..0x9F) are read once at begin() and fed into the Bosch
   compensation formulas; they are the chip's own trim, not a user calibration.
 */
-#ifndef NIUSIMU_BMP280_REGISTERS_H
-#define NIUSIMU_BMP280_REGISTERS_H
+#ifndef ARDUINONRF_IMU_BMP280_REGISTERS_H
+#define ARDUINONRF_IMU_BMP280_REGISTERS_H
 
 #include <stdint.h>
 
@@ -61,4 +61,4 @@ static constexpr uint8_t STANDBY_250MS = 0x03;
 }  // namespace bmp280
 }  // namespace nimu
 
-#endif  // NIUSIMU_BMP280_REGISTERS_H
+#endif  // ARDUINONRF_IMU_BMP280_REGISTERS_H

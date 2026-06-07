@@ -67,8 +67,8 @@ Create `src/MYIMU.h` at the `src/` root (Arduino only puts `src/` on the include
 path, not its subfolders):
 
 ```cpp
-#ifndef NIUSIMU_PUBLIC_MYIMU_H
-#define NIUSIMU_PUBLIC_MYIMU_H
+#ifndef ARDUINONRF_IMU_PUBLIC_MYIMU_H
+#define ARDUINONRF_IMU_PUBLIC_MYIMU_H
 #include "sensors/MYIMU/MYIMU.h"
 #endif
 ```
