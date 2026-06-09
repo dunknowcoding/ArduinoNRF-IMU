@@ -1,4 +1,4 @@
-# ArduinoNRF-IMU
+# NiusIMU
 
 A **unified, friendly IMU library** for the [ArduinoNRF](../ArduinoNRF) board
 package. One common API across every IMU, with chip-specific extras where a
@@ -53,6 +53,10 @@ SPI only accel + gyro are read.
 
 This library lives next to the ArduinoNRF package. Either copy this folder into
 your Arduino `libraries/` directory, or compile an example directly:
+
+In Arduino Library Manager it is published as **NiusIMU**. The GitHub repository
+keeps the historical `ArduinoNRF-IMU` name because it is developed alongside the
+ArduinoNRF core.
 
 ```sh
 arduino-cli compile \

@@ -1,4 +1,4 @@
-# ArduinoNRF-IMU architecture
+# NiusIMU architecture
 
 The library has three layers. Everything a sketch sees is the top one.
 
