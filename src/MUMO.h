@@ -1,0 +1,4 @@
+#ifndef ARDUINONRF_IMU_PUBLIC_MUMO_H
+#define ARDUINONRF_IMU_PUBLIC_MUMO_H
+#include "boards/MUMO/MUMO.h"
+#endif

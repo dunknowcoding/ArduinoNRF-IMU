@@ -30,11 +30,6 @@ void setup() {
 
   Serial.print("MPU-6500 ready. WHO_AM_I = 0x");
   Serial.println(imu.whoAmI(), HEX);
-
-  // Remove gyro drift: hold the board completely still for about a second.
-  Serial.println("Calibrating gyro - keep the board still...");
-  imu.calibrateGyro();
-  Serial.println("Done.");
 }
 
 void loop() {

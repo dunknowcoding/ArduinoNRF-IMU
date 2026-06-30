@@ -1,0 +1,4 @@
+#ifndef ARDUINONRF_IMU_PUBLIC_QMC6309_H
+#define ARDUINONRF_IMU_PUBLIC_QMC6309_H
+#include "sensors/QMC6309/QMC6309.h"
+#endif

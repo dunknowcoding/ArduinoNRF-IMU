@@ -1,0 +1,4 @@
+#ifndef ARDUINONRF_IMU_PUBLIC_BMP180_H
+#define ARDUINONRF_IMU_PUBLIC_BMP180_H
+#include "sensors/BMP180/BMP180.h"
+#endif

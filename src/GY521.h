@@ -1,0 +1,4 @@
+#ifndef ARDUINONRF_IMU_PUBLIC_GY521_H
+#define ARDUINONRF_IMU_PUBLIC_GY521_H
+#include "boards/GY521/GY521.h"
+#endif

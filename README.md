@@ -1,62 +1,90 @@
-# NiusIMU
+<p align="center">
+  <img src="docs/assets/niusimu-header.png" alt="IMU breakout boards connected to an Arduino nRF52840 board" width="100%">
+</p>
 
-A **unified, friendly IMU library** for the [ArduinoNRF](../ArduinoNRF) board
-package. One common API across every IMU, with chip-specific extras where a
-sensor offers something unique — so your code reads the same whether the board
-carries an MPU-9250 today or something else tomorrow.
+<h1 align="center">NiusIMU</h1>
 
-It doubles as a **bring-up and debugging tool for the ArduinoNRF core**: all
-sensor traffic flows through one small bus layer, so the I2C (`Wire`) and SPI
-drivers get exercised by real devices, not just loopback tests.
+<p align="center">
+  One Arduino-style motion API for real marketplace modules, clone populations,
+  and modern sensor-fusion silicon on ArduinoNRF.
+</p>
 
-## Highlights
+<p align="center">
+  <a href="https://github.com/dunknowcoding/ArduinoNRF-IMU/releases"><img alt="GitHub release" src="https://img.shields.io/github/v/release/dunknowcoding/ArduinoNRF-IMU?style=flat-square&color=00a6a6"></a>
+  <a href="https://github.com/dunknowcoding/ArduinoNRF-IMU/blob/main/LICENSE"><img alt="Apache-2.0 license" src="https://img.shields.io/badge/license-Apache--2.0-e85d4a?style=flat-square"></a>
+  <img alt="ArduinoNRF" src="https://img.shields.io/badge/ArduinoNRF-nRF52840-00878f?style=flat-square">
+  <img alt="Examples" src="https://img.shields.io/badge/examples-148-4c78a8?style=flat-square">
+</p>
 
-- **Same API for every sensor.** `update()`, then `accelG()`, `gyroDps()`,
-  `magUT()`, `temperatureC()` — identical no matter the chip.
-- **Engineering units, always.** g, deg/s, µT, °C. Conversions to m/s² and rad/s
-  are one call away.
-- **Calibrate once, restore forever.** Gyro, accel and magnetometer calibration
-  produce a struct you print and paste back — no waving the board at every boot.
-- **Whole boards in one object.** `<GY91.h>` brings up the MPU + BMP280 together
-  (`accelG()`, `gyroDps()`, `pressureHpa()`, `altitudeM()`); `<GY9250.h>` is the
-  9-axis board. Or use the bare chips directly.
-- **Pluggable sensors as folders.** Drop a driver in `src/sensors/<NAME>/`, add a
-  one-line forwarding header, and `#include <NAME.h>` works. See
-  [docs/ADDING_A_SENSOR.md](docs/ADDING_A_SENSOR.md).
-- **Chip-specific power kept available.** The MPU-9250 driver still exposes its
-  magnetometer control, raw DLPF codes, data-ready interrupt and raw registers.
+## Built for the modules people actually buy
 
-## Supported sensors and boards
+| Unified surface | Marketplace-aware | Modern feature paths | ArduinoNRF-native |
+| --- | --- | --- | --- |
+| `begin()`, `update()`, engineering units, and calibration | Exact photographed silks, clone identities, and populated-core probing | Fusion, FIFO, auxiliary buses, FSM/MLC, ASC, OIS/EIS, high-g, and host interrupts | I2C and SPI paths compiled for the ArduinoNRF nRF52840 core |
 
-Chips live in `src/sensors/`; multi-chip breakout boards in `src/boards/`. Pick
-whichever name matches what you bought — `<GY91.h>` for the board, or the
-individual chip headers if you wired chips up yourself.
+Basic sketches stay minimal. Interrupt routing, calibration, fusion, AI,
+auxiliary sensors, and protocol-specific behavior live in `Advanced` or focused
+feature examples.
 
-| Include | Device | Accel | Gyro | Mag | Pressure |
-| ------- | ------ | ----- | ---- | --- | -------- |
-| `<GY91.h>` | GY-91 board (MPU-9250/6500 + BMP280) | ✅ | ✅ | ✅† | ✅ |
-| `<GY9250.h>` | GY-9250 board (MPU-9250) | ✅ | ✅ | ✅ (AK8963) | — |
-| `<MPU9250.h>` | MPU-9250 chip (9-axis) | ✅ | ✅ | ✅ (AK8963) | — |
-| `<MPU6500.h>` | MPU-6500 chip (6-axis) | ✅ | ✅ | — | — |
-| `<BMP280.h>` | BMP280 barometer | — | — | — | ✅ (+ temp) |
+## Quick start
 
-† Many GY-91 boards actually carry a 6-axis MPU-6500 (`WHO_AM_I` 0x70, no
-magnetometer). The MPU-9250 driver auto-detects this and runs as a 6-axis part;
-`hasMagnetometer()` tells you which one you have.
+```cpp
+#include <MPU9250.h>
 
-The MPU-9250 is an MPU-6500 plus an AK8963, so its driver simply **extends**
-`MPU6500`. Over I2C the AK8963 is reached through the MPU's internal I2C master
-(not bypass), so a dead/absent magnetometer can never jam the accel/gyro bus. On
-SPI only accel + gyro are read.
+MPU9250 imu;
 
-## Install
+void setup() {
+  Serial.begin(115200);
+  if (!imu.begin()) while (true) {}
+}
 
-This library lives next to the ArduinoNRF package. Either copy this folder into
-your Arduino `libraries/` directory, or compile an example directly:
+void loop() {
+  if (!imu.update()) return;
 
-In Arduino Library Manager it is published as **NiusIMU**. The GitHub repository
-keeps the historical `ArduinoNRF-IMU` name because it is developed alongside the
-ArduinoNRF core.
+  Vec3 acceleration = imu.accelG();
+  Vec3 rotation = imu.gyroDps();
+  Vec3 magneticField = imu.magUT();
+}
+```
+
+## Supported devices
+
+| Family | Sensors and modules |
+| --- | --- |
+| InvenSense / TDK | MPU-6050, MPU-6500, MPU-6886, MPU-9250, MPU-9255, ICM-20602, ICM-20689, ICM-20948, ICM-42688-P, ICM-45686 |
+| Bosch | BMI088, BMI160, BMI270, BMI323, BMX055, BNO055 |
+| CEVA | BNO085, BNO086 |
+| ST | LSM303DLHC, LSM303D, LSM6DS3, LSM6DS3TR-C, LSM6DSOX, LSM6DSV, LSM6DSV320X, LSM9DS1, L3G4200D, L3GD20/H |
+| Other motion and magnetic | ADXL345, MMA8452Q, ITG-3200/3205, QMI8658/C, HMC5883L, QMC5883L, QMC6309 |
+| Pressure | BMP180/BMP085, BMP280, MS5611 |
+| Named marketplace boards | GY-45/50/63/68/80/801/85/86/87/88/91/271/273/291/511/521/9250, GY-LSM6DS3, GY-BNO055/085, GY-601N1, CJMCU-055, CJMCU-633/603F, MUMO |
+
+The library also covers the photographed full-pin and eight-pad ICM-45686
+variants, ICM-20948 ten-pad board, LSM6DSV320X and LSM6DS3TR-C boards,
+SparkFun-layout BNO086 clones, and LSM303DLHC + L3GD20 marketplace clones.
+
+See [IMU Support and Usage](docs/IMU_SUPPORT.md) for exact pin maps, core-versus-
+carrier selection, clone identification, calibration workflows, limitations,
+and the feature-example index.
+
+## LSM6DSV320X without a ceiling
+
+The friendly C++ API covers normal sampling, the independent 320 g channel,
+high-g events, SFLP fusion, the sensor hub, MEMS Studio UCF loading, FSM/MLC,
+and ASC. `stContext()` also exposes the complete bundled ST register driver for
+FIFO, EIS/OIS, embedded events, self-test, and sensor-side MIPI I3C 1.1/IBI
+configuration.
+
+```cpp
+LSM6DSV320X imu;
+imu.begin();
+lsm6dsv320x_fifo_watermark_set(imu.stContext(), 16);
+```
+
+## Install and build
+
+Install **NiusIMU** from Arduino Library Manager, or compile this checkout
+directly beside ArduinoNRF:
 
 ```sh
 arduino-cli compile \
@@ -65,97 +93,11 @@ arduino-cli compile \
   <path-to>/ArduinoNRF-IMU/examples/GY91/GY91_Basic
 ```
 
-## Wiring (ProMicro nRF52840, default I2C)
+## Documentation
 
-| Sensor | Board pad | nRF52 pin |
-| ------ | --------- | --------- |
-| SDA | `SDA` (D6) | P1.00 |
-| SCL | `SCL` (D7) | P0.11 |
-| VCC | `3V3` | — |
-| GND | `GND` | — |
+- [IMU support, pinouts, and usage](docs/IMU_SUPPORT.md)
+- [Architecture](docs/ARCHITECTURE.md)
+- [Adding a sensor](docs/ADDING_A_SENSOR.md)
 
-## Quick start
-
-```cpp
-#include <MPU9250.h>
-MPU9250 imu;
-
-void setup() {
-  Serial.begin(115200);
-  imu.begin();            // Wire @ 0x68, sensible defaults
-  imu.calibrateGyro();    // hold still ~1 s
-}
-
-void loop() {
-  imu.update();
-  Vec3 a = imu.accelG();  // g
-  Vec3 g = imu.gyroDps(); // deg/s
-  Vec3 m = imu.magUT();   // µT
-  delay(50);
-}
-```
-
-## Examples
-
-| Example | What it shows |
-| ------- | ------------- |
-| [`I2C_Scanner`](examples/I2C_Scanner) | Find devices on the bus; first thing to run on a new board |
-| [`GY91/GY91_Basic`](examples/GY91/GY91_Basic) | Whole GY-91 (IMU + barometer) in one quick read loop |
-| [`GY91/GY91_Advanced`](examples/GY91/GY91_Advanced) | Full config + guided calibration of every sensor, with on-screen hints |
-| [`GY9250/GY9250_Basic`](examples/GY9250/GY9250_Basic) | Minimal 9-axis read loop |
-| [`GY9250/GY9250_Calibration`](examples/GY9250/GY9250_Calibration) | Guided gyro/accel/mag calibration that prints paste-ready code |
-| [`GY9250/GY9250_Advanced`](examples/GY9250/GY9250_Advanced) | Custom ranges, DLPF, sample rate, data-ready, raw registers |
-| [`GY9250/GY9250_SPI`](examples/GY9250/GY9250_SPI) | Read over SPI: configure at 1 MHz, then burst data at 8 MHz |
-| [`GY9250/GY9250_DataReadyInterrupt`](examples/GY9250/GY9250_DataReadyInterrupt) | Read on the INT pin (D0) — one read per fresh sample, no polling |
-| [`GY9250/GY9250_FSYNC`](examples/GY9250/GY9250_FSYNC) | Time-stamp an external event on FSYNC (D1) into the sample stream |
-| [`MPU6500/MPU6500_Basic`](examples/MPU6500/MPU6500_Basic) | Bare 6-axis accelerometer + gyroscope |
-| [`BMP280/BMP280_Basic`](examples/BMP280/BMP280_Basic) | Pressure, temperature and altitude, with sea-level reference |
-
-## Interfaces: SPI, INT and FSYNC (MPU-6500 / MPU-9250)
-
-The IMU drivers run over **I2C or SPI** and expose the chip's interrupt and
-external-sync pins. All three were hardware-verified on a GY-9250 over SPI:
-
-- **SPI.** `beginSPI(SPI, SS)` (the part is pinned to SPI via `I2C_IF_DIS`).
-  Configure at the default 1 MHz, then call `setBusClockHz()` higher to burst
-  data — verified 100% reliable from 0.5 MHz up to the ArduinoNRF SPI ceiling of
-  8 MHz, for both register and data reads. The magnetometer is I2C-only, so SPI
-  is a 6-axis stream.
-- **Data-ready INT.** `setDataReadyInterrupt(true)` pulses the INT pin once per
-  sample; attach an interrupt and read only when a fresh sample exists. Verified
-  a steady 100 Hz with every sample serviced across the whole SPI speed range.
-- **FSYNC.** `setExternalSync(MPU6500::FSYNC_TEMP)` latches the FSYNC pin level
-  into a sample LSB so an external event is time-stamped against the IMU data;
-  read it back with `fsyncLevel()`. Verified the captured level tracks the pin
-  exactly.
-
-See the `GY9250_SPI`, `GY9250_DataReadyInterrupt` and `GY9250_FSYNC` examples.
-
-## The common API (every sensor)
-
-```cpp
-bool   begin();                       // default bus + sensible defaults
-bool   beginI2C(TwoWire&, uint8_t);   // pick bus / address
-bool   beginSPI(SPIClass&, uint8_t);  // SPI with a CS pin
-uint8_t whoAmI();  bool isConnected();
-
-bool   update();                      // one fresh snapshot
-Vec3   accelG();  Vec3 accelMs2();
-Vec3   gyroDps(); Vec3 gyroRps();
-Vec3   magUT();   float temperatureC();
-bool   hasMagnetometer();
-
-bool   setAccelRangeG(uint16_t);      // 2/4/8/16 …
-bool   setGyroRangeDps(uint16_t);     // 250/500/1000/2000 …
-bool   setLowPassFilterHz(uint16_t);
-bool   setSampleRateHz(uint16_t);
-
-bool   calibrateGyro();  calibrateAccel();  calibrateMag();
-IMUCalibration getCalibration();  void setCalibration(IMUCalibration);
-```
-
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how the pieces fit together.
-
-## License
-
-Apache-2.0. See [LICENSE](LICENSE).
+NiusIMU is licensed under [Apache-2.0](LICENSE). The bundled ST
+LSM6DSV320X register driver retains its BSD-3-Clause license.

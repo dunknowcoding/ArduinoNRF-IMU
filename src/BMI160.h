@@ -1,0 +1,4 @@
+#ifndef ARDUINONRF_IMU_PUBLIC_BMI160_H
+#define ARDUINONRF_IMU_PUBLIC_BMI160_H
+#include "sensors/BMI160/BMI160.h"
+#endif

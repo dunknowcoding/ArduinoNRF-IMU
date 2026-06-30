@@ -1,0 +1,4 @@
+#ifndef ARDUINONRF_IMU_FORWARD_BMI088_H
+#define ARDUINONRF_IMU_FORWARD_BMI088_H
+#include "sensors/BMI088/BMI088.h"
+#endif

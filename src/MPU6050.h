@@ -1,0 +1,4 @@
+#ifndef ARDUINONRF_IMU_PUBLIC_MPU6050_H
+#define ARDUINONRF_IMU_PUBLIC_MPU6050_H
+#include "sensors/MPU6050/MPU6050.h"
+#endif

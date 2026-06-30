@@ -32,11 +32,6 @@ void setup() {
   Serial.println(imu.whoAmI(), HEX);
   Serial.print("Magnetometer: ");
   Serial.println(imu.hasMagnetometer() ? "yes" : "no");
-
-  // Remove gyro drift: hold the board completely still for about one second.
-  Serial.println("Calibrating gyro - keep the board still...");
-  imu.calibrateGyro();
-  Serial.println("Done.");
 }
 
 void loop() {

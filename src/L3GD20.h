@@ -1,0 +1,4 @@
+#ifndef ARDUINONRF_IMU_PUBLIC_L3GD20_H
+#define ARDUINONRF_IMU_PUBLIC_L3GD20_H
+#include "sensors/L3GD20/L3GD20.h"
+#endif

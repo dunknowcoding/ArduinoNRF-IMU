@@ -7,7 +7,7 @@
   sensors to EDA/ECL and read them THROUGH the MPU - handy to keep extra sensors
   on a separate, isolated bus, or to fan more sensors off one MCU.
 
-  This sketch scans the aux bus and identifies what it finds. It was verified
+  This sketch scans the auxiliary bus and identifies what it finds. It works
   with a GY-91 (an MPU-6500 at 0x68 + a BMP280 at 0x76) wired to EDA/ECL: the
   AK8963 at 0x0C plus both GY-91 chips all answer.
 

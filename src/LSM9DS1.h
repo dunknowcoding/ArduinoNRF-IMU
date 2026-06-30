@@ -1,0 +1,4 @@
+#ifndef ARDUINONRF_IMU_PUBLIC_LSM9DS1_H
+#define ARDUINONRF_IMU_PUBLIC_LSM9DS1_H
+#include "sensors/LSM9DS1/LSM9DS1.h"
+#endif

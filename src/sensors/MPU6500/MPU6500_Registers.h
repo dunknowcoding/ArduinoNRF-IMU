@@ -71,6 +71,9 @@ static constexpr uint8_t PWR1_CLKSEL_AUTO = 0x01;  // best available clock (PLL)
 // INT_PIN_CFG bits
 static constexpr uint8_t INTCFG_BYPASS_EN = 0x02;  // expose aux bus on main I2C
 static constexpr uint8_t INTCFG_LATCH_INT = 0x20;  // latch INT until cleared
+static constexpr uint8_t INTCFG_ACTIVE_LOW = 0x80;
+static constexpr uint8_t INTCFG_OPEN_DRAIN = 0x40;
+static constexpr uint8_t INTCFG_CLEAR_ANY_READ = 0x10;
 
 // USER_CTRL bits
 static constexpr uint8_t USERCTRL_I2C_MST_EN = 0x20;   // run the internal master

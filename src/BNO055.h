@@ -1,0 +1,4 @@
+#ifndef ARDUINONRF_IMU_PUBLIC_BNO055_H
+#define ARDUINONRF_IMU_PUBLIC_BNO055_H
+#include "sensors/BNO055/BNO055.h"
+#endif

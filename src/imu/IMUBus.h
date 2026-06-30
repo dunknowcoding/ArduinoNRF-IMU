@@ -49,7 +49,7 @@ class IMUBus {
    * @param clockHz SPI clock in Hz
    */
   void beginSPI(SPIClass& spi, uint8_t csPin, uint32_t clockHz = 1000000,
-                uint8_t readFlag = 0x80);
+                uint8_t readFlag = 0x80, uint8_t readDummyBytes = 0);
 
   /** True if this bus is in I2C mode (vs SPI). */
   bool isI2C() const { return mode_ == Mode::I2C; }
@@ -109,6 +109,7 @@ class IMUBus {
   uint8_t address_ = 0;
   uint8_t csPin_ = 0xFF;
   uint8_t spiReadFlag_ = 0x80;
+  uint8_t spiReadDummyBytes_ = 0;
   uint32_t clockHz_ = 400000;
 };
 

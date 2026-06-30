@@ -243,10 +243,23 @@ bool MPU6500::setDataReadyInterrupt(bool enable, bool latch) {
   // Never set BYPASS_EN here: the 9-axis driver reaches its magnetometer over
   // the internal master, and enabling bypass would short the aux bus onto the
   // main bus.
-  uint8_t pinCfg = latch ? INTCFG_LATCH_INT : 0x00;
-  bus_.writeRegister(INT_PIN_CFG, pinCfg);
+  if (bus_.updateRegister(INT_PIN_CFG, INTCFG_LATCH_INT,
+                          latch ? INTCFG_LATCH_INT : 0) != IMUStatus::Ok) {
+    return false;
+  }
   return bus_.writeRegister(INT_ENABLE, enable ? INT_RAW_RDY : 0x00) ==
          IMUStatus::Ok;
+}
+
+bool MPU6500::configureInterruptPin(bool activeLow, bool openDrain,
+                                    bool latched, bool clearOnAnyRead) {
+  uint8_t mask = INTCFG_ACTIVE_LOW | INTCFG_OPEN_DRAIN |
+                 INTCFG_LATCH_INT | INTCFG_CLEAR_ANY_READ;
+  uint8_t value = (activeLow ? INTCFG_ACTIVE_LOW : 0) |
+                  (openDrain ? INTCFG_OPEN_DRAIN : 0) |
+                  (latched ? INTCFG_LATCH_INT : 0) |
+                  (clearOnAnyRead ? INTCFG_CLEAR_ANY_READ : 0);
+  return bus_.updateRegister(INT_PIN_CFG, mask, value) == IMUStatus::Ok;
 }
 
 bool MPU6500::dataReady() {

@@ -1,0 +1,4 @@
+#ifndef ARDUINONRF_IMU_FORWARD_BMI323_H
+#define ARDUINONRF_IMU_FORWARD_BMI323_H
+#include "sensors/BMI323/BMI323.h"
+#endif

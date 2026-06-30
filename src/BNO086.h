@@ -1,0 +1,4 @@
+#ifndef ARDUINONRF_IMU_FORWARD_BNO086_H
+#define ARDUINONRF_IMU_FORWARD_BNO086_H
+#include "BNO08x.h"
+#endif

@@ -12,12 +12,13 @@ void IMUBus::beginI2C(TwoWire& wire, uint8_t addr7, uint32_t clockHz) {
 }
 
 void IMUBus::beginSPI(SPIClass& spi, uint8_t csPin, uint32_t clockHz,
-                      uint8_t readFlag) {
+                      uint8_t readFlag, uint8_t readDummyBytes) {
   mode_ = Mode::SPI;
   spi_ = &spi;
   csPin_ = csPin;
   clockHz_ = clockHz;
   spiReadFlag_ = readFlag;
+  spiReadDummyBytes_ = readDummyBytes;
   pinMode(csPin_, OUTPUT);
   digitalWrite(csPin_, HIGH);  // CS idle high
   spi_->begin();
@@ -170,6 +171,9 @@ IMUStatus IMUBus::spiRead(uint8_t reg, uint8_t* buffer, size_t len) {
   spi_->beginTransaction(SPISettings(clockHz_, MSBFIRST, SPI_MODE0));
   digitalWrite(csPin_, LOW);
   spi_->transfer(reg | spiReadFlag_);  // set read flag
+  for (uint8_t i = 0; i < spiReadDummyBytes_; ++i) {
+    spi_->transfer(0x00);
+  }
   for (size_t i = 0; i < len; ++i) {
     buffer[i] = spi_->transfer(0x00);
   }

@@ -30,10 +30,6 @@ void setup() {
 
   Serial.print("Magnetometer: ");
   Serial.println(board.hasMagnetometer() ? "yes (9-axis)" : "no (6-axis board)");
-
-  // Altitude is relative to sea-level pressure. The default is the standard
-  // atmosphere (1013.25 hPa); set your local QNH for an accurate height.
-  board.setSeaLevelPressureHpa(1013.25);
 }
 
 void loop() {

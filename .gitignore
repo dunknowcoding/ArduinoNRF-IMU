@@ -12,3 +12,6 @@ build/
 .DS_Store
 Thumbs.db
 *.swp
+
+# Local research, purchase notes, and hardware bring-up logs
+/internal/

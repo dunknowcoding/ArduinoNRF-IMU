@@ -1,0 +1,6 @@
+#ifndef ARDUINONRF_IMU_PUBLIC_GY601N1_H
+#define ARDUINONRF_IMU_PUBLIC_GY601N1_H
+
+#include "boards/GY601N1/GY601N1.h"
+
+#endif

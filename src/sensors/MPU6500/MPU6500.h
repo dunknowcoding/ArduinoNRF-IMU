@@ -80,6 +80,9 @@ class MPU6500 : public IMUSensor {
    * @param latch   true keeps INT asserted until INT_STATUS is read.
    */
   bool setDataReadyInterrupt(bool enable, bool latch = false);
+  bool configureInterruptPin(bool activeLow, bool openDrain,
+                             bool latched = false,
+                             bool clearOnAnyRead = false);
 
   /** True if INT_STATUS reports a new sample is ready. */
   bool dataReady();

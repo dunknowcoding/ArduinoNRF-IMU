@@ -34,11 +34,30 @@ The library has three layers. Everything a sketch sees is the top one.
   inertial code exists once. The `BMP280` is a barometer, not an IMU, so it does
   not derive from `IMUSensor` — it has its own small surface but still reads/writes
   through the same `IMUBus`.
-- **Boards** live in `src/boards/<NAME>/` and compose chips. `GY91` owns an
-  `MPU9250` (which auto-degrades to 6-axis on MPU-6500 boards) and a `BMP280` and
-  forwards a friendly whole-board API; `GY9250` is just an `MPU9250` under the
-  breakout's name. Each board/chip gets a one-line `src/<NAME>.h` forwarder so a
-  sketch writes `#include <NAME.h>`.
+- **Boards** live in `src/boards/<NAME>/` when they compose multiple chips,
+  auto-detect different populated cores, add carrier behavior such as
+  protocol-select GPIO, or preserve an established printed marketplace name.
+  `GY91`, for example, combines an MPU-family IMU and a BMP280. Multiple
+  unnamed pinout variants of one core do not receive invented `Module` classes;
+  they share the chip driver and their silks are documented in
+  `docs/IMU_SUPPORT.md`.
+
+## Why two headers can have the same filename
+
+Arduino adds the library's `src/` directory to the normal include path, not
+every sensor subdirectory. Therefore `src/LSM6DSV320X.h` is a tiny public
+forwarder that makes this work:
+
+```cpp
+#include <LSM6DSV320X.h>
+```
+
+The actual class declaration stays beside its implementation and register
+definitions in `src/sensors/LSM6DSV320X/LSM6DSV320X.h`. These files are not
+copies: the root header contains only an include guard and one include. Board
+headers follow the same pattern. Removing the root forwarder would expose an
+internal path in every Arduino sketch; flattening every implementation into
+`src/` would discard the folder-per-driver organization.
 
 ## Why this shape
 

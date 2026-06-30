@@ -1,0 +1,4 @@
+#ifndef ARDUINONRF_IMU_PUBLIC_QMI8658_H
+#define ARDUINONRF_IMU_PUBLIC_QMI8658_H
+#include "sensors/QMI8658/QMI8658.h"
+#endif

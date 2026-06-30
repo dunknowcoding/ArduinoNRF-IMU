@@ -1,0 +1,4 @@
+#ifndef ARDUINONRF_IMU_PUBLIC_LSM303D_H
+#define ARDUINONRF_IMU_PUBLIC_LSM303D_H
+#include "sensors/LSM303D/LSM303D.h"
+#endif

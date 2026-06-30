@@ -1,0 +1,4 @@
+#ifndef ARDUINONRF_IMU_PUBLIC_GY87_H
+#define ARDUINONRF_IMU_PUBLIC_GY87_H
+#include "boards/GY87/GY87.h"
+#endif
