@@ -39,6 +39,13 @@ struct Vec3 {
   float y = 0.0f;
   float z = 0.0f;
 
+  // Explicit constructors so `Vec3{}` and `Vec3{x, y, z}` both compile under
+  // C++11 (the AVR core's default): a struct with default member initializers
+  // is not an aggregate before C++14, so brace-init would otherwise need a
+  // constructor.
+  Vec3() = default;
+  Vec3(float x_, float y_, float z_) : x(x_), y(y_), z(z_) {}
+
   /** Length of the vector (e.g. total acceleration magnitude). */
   float magnitude() const {
     return sqrtf(x * x + y * y + z * z);

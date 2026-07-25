@@ -1,3 +1,4 @@
+#if !defined(__AVR__)  // ST LSM6DSV320X driver is not AVR/C++11-portable
 #include "LSM6DSV320X.h"
 
 namespace nimu {
@@ -232,3 +233,5 @@ bool LSM6DSV320X::setI3CInterrupts(bool enable) {
 }
 
 }  // namespace nimu
+
+#endif  // !__AVR__

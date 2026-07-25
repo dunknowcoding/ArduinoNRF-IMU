@@ -1,6 +1,10 @@
 #include "BMP180.h"
 
+#if defined(__AVR__)
+#include <math.h>  // avr-libc provides powf; the forward-decl below conflicts on AVR
+#else
 extern "C" float powf(float, float);
+#endif
 
 namespace nimu {
 using namespace bmp180;

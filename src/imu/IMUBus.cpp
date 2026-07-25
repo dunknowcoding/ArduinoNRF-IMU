@@ -66,15 +66,35 @@ IMUStatus IMUBus::updateRegister(uint8_t reg, uint8_t mask, uint8_t value) {
   return writeRegister(reg, current);
 }
 
+// TwoWire::end() is absent on the ESP8266 core; a plain begin() re-inits its
+// software I2C, so make the teardown a no-op there.
+static inline void imuWireEnd(TwoWire *wire) {
+#if defined(ESP8266)
+  (void)wire;
+#else
+  wire->end();
+#endif
+}
+
 IMUStatus IMUBus::recoverBus() {
   if (mode_ != Mode::I2C || wire_ == nullptr) {
     return IMUStatus::Ok;  // nothing to recover on SPI
   }
-  const uint8_t sda = wire_->pinSDA();
-  const uint8_t scl = wire_->pinSCL();
+  // TwoWire::pinSDA()/pinSCL() exist only on a few cores (ArduinoNRF, classic
+  // ESP32 2.x). Use the portable default SDA/SCL pin macros that every target
+  // core defines; when a core exposes neither, fall back to a plain re-init
+  // instead of bit-banging unknown lines.
+#if !(defined(SDA) && defined(SCL))
+  imuWireEnd(wire_);
+  wire_->begin();
+  wire_->setClock(clockHz_);
+  return IMUStatus::Ok;
+#else
+  const uint8_t sda = static_cast<uint8_t>(SDA);
+  const uint8_t scl = static_cast<uint8_t>(SCL);
 
   // Release the peripheral's hold on the lines so we can bit-bang them.
-  wire_->end();
+  imuWireEnd(wire_);
   pinMode(scl, OUTPUT);
   pinMode(sda, INPUT_PULLUP);
 
@@ -104,6 +124,7 @@ IMUStatus IMUBus::recoverBus() {
   wire_->begin();
   wire_->setClock(clockHz_);
   return released ? IMUStatus::Ok : IMUStatus::BusError;
+#endif  // SDA && SCL
 }
 
 IMUStatus IMUBus::ping() {

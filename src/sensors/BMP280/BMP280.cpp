@@ -3,7 +3,11 @@
 // Just one libm call (altitude uses a fractional power). Pulling in <math.h>
 // here would drag in the C++ <limits>/<algorithm> headers, which clash with
 // Arduino's min()/max() macros in sketches, so forward-declare the one symbol.
+#if defined(__AVR__)
+#include <math.h>  // avr-libc provides powf; the forward-decl below conflicts on AVR
+#else
 extern "C" float powf(float, float);
+#endif
 
 namespace nimu {
 using namespace bmp280;

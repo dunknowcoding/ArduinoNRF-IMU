@@ -93,6 +93,32 @@ arduino-cli compile \
   <path-to>/ArduinoNRF-IMU/examples/GY91/GY91_Basic
 ```
 
+## MCU / platform support
+
+NiusIMU began on the ArduinoNRF nRF52840 core, but the sensor and bus layers are
+portable C++. The core paths (e.g. MPU-6050 over I2C, calibration, bus recovery)
+now build across every major Arduino architecture:
+
+| Architecture | Example board | Status |
+|---|---|---|
+| Nordic nRF52 (ArduinoNRF) | ProMicro nRF52840 | ✅ native |
+| Espressif ESP32 / ESP32-S3 | ESP32-S3 DevKit | ✅ |
+| Espressif ESP8266 | Generic ESP8266 | ✅ |
+| RP2040 / RP2350 | Raspberry Pi Pico | ✅ |
+| Microchip SAMD21 (Cortex-M0+) | Arduino Zero | ✅ |
+| Renesas RA4M1 | Arduino UNO R4 WiFi | ✅ |
+| AVR (ATmega328P) | Arduino Nano / Uno | ✅ (see note) |
+| megaAVR | Arduino Nano Every | ✅ |
+
+Notes:
+- **Bus recovery** uses each core's default `SDA`/`SCL` pin macros (the earlier
+  `TwoWire::pinSDA()/pinSCL()` accessors exist on only a few cores). On a core
+  that exposes neither, `recoverBus()` falls back to a plain re-init.
+- **AVR (C++11)**: the ST **LSM6DSV320X** advanced driver is compiled out on AVR
+  (its generated register layer needs C++14+ and more flash/RAM than an
+  ATmega328P provides). Every other listed sensor builds; a full 6-axis IMU such
+  as the MPU-6050 fits an Uno/Nano with room to spare.
+
 ## Documentation
 
 - [IMU support, pinouts, and usage](docs/IMU_SUPPORT.md)

@@ -1,3 +1,4 @@
+#if !defined(__AVR__)  // ST LSM6DSV320X driver is not AVR/C++11-portable
 /**
   ******************************************************************************
   * @file    lsm6dsv320x_reg.c
@@ -12797,3 +12798,5 @@ int32_t lsm6dsv320x_act_wkup_time_windows_get(const stmdev_ctx_t *ctx,
   * @}
   *
   */
+
+#endif  // !__AVR__
