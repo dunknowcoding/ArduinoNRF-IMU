@@ -38,7 +38,13 @@ uint8_t MPU6050::whoAmI() {
 }
 
 bool MPU6050::isConnected() {
-  return whoAmI() == kWhoAmI;
+  const uint8_t id = whoAmI();
+  // The genuine MPU-6050 reports WHO_AM_I 0x68, but widely-sold clones (GY-521
+  // and similar) report other fixed IDs (0x98, 0x70, 0x71, 0x72, 0x75) while
+  // being register-compatible. Accept the known family so a clone that ACKs at
+  // the I2C address is not rejected outright.
+  return id == kWhoAmI || id == 0x98 || id == 0x70 || id == 0x71 ||
+         id == 0x72 || id == 0x75;
 }
 
 bool MPU6050::reset() {
