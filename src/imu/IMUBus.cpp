@@ -9,6 +9,22 @@ void IMUBus::beginI2C(TwoWire& wire, uint8_t addr7, uint32_t clockHz) {
   clockHz_ = clockHz;
   wire_->begin();
   wire_->setClock(clockHz_);
+
+  // Let the controller settle, then spend a throwaway transaction on it.
+  //
+  // The first transfer after Wire.begin() is unreliable on ESP32: it comes
+  // back NACKed or with a bus fault on a bus that is fine a millisecond later.
+  // Every driver's first act after this call is a WHO_AM_I, so that read got
+  // the bad transfer, the identity check failed, and begin() reported "not
+  // found" for a part sitting right there answering. A real BMI270 reading
+  // 0x24 perfectly well from a scanner was rejected this way.
+  //
+  // A driver cannot assume its caller warmed the bus, so warm it here. The
+  // probe costs microseconds and its result is deliberately ignored.
+  delay(10);
+  wire_->beginTransmission(address_);
+  (void)wire_->endTransmission();
+  delay(5);
 }
 
 void IMUBus::beginSPI(SPIClass& spi, uint8_t csPin, uint32_t clockHz,
@@ -178,10 +194,24 @@ IMUStatus IMUBus::i2cRead(uint8_t reg, uint8_t* buffer, size_t len) {
       chunk = kMaxI2CBurst;
     }
 
-    wire_->beginTransmission(address_);
-    wire_->write(static_cast<uint8_t>(reg + offset));
-    // Repeated start (no stop) keeps the read tied to the address we just set.
-    if (wire_->endTransmission(false) != 0) {
+    // Two attempts, not one.
+    //
+    // A transfer that NACKs does not always mean the device is absent: the
+    // controller is briefly unhappy after a failed transfer to a different
+    // address, and the read that follows fails even though its target is
+    // answering. begin() walks the primary address before the alternate, so
+    // on any board strapped to the alternate the identity read is always the
+    // one immediately after a NACK - and a real BMI270 reporting 0x24 to a
+    // scanner was rejected as "not found" every time because of it.
+    bool addressed = false;
+    for (uint8_t attempt = 0; attempt < 2 && !addressed; ++attempt) {
+      wire_->beginTransmission(address_);
+      wire_->write(static_cast<uint8_t>(reg + offset));
+      // Repeated start (no stop) keeps the read tied to the address just set.
+      addressed = (wire_->endTransmission(false) == 0);
+      if (!addressed) delay(2);
+    }
+    if (!addressed) {
       return IMUStatus::BusError;
     }
 
