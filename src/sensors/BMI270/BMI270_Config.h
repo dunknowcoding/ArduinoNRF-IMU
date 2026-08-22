@@ -13,6 +13,19 @@
 namespace nimu {
 namespace bmi270 {
 
+// INCOMPLETE: this is a placeholder, not the real configuration image.
+//
+// A BMI270 does nothing until an 8192-byte image from Bosch has been uploaded
+// into it. What follows is a few hundred bytes, so every BMI270 will reach
+// uploadConfiguration(), transfer this successfully, and then refuse to report
+// init_ok - which looks exactly like a dead sensor.
+//
+// To make the driver work, replace this with bmi270_config_file[] from the
+// Bosch Sensortec BMI270 API (BSD-3-Clause):
+//   https://github.com/boschsensortec/BMI270_SensorAPI  ->  bmi270.c
+//
+// BMI270::uploadConfiguration() checks the size and reports
+// Stage::ConfigFileStub rather than failing silently.
 constexpr uint8_t kConfigFile[] = {
   0xc8, 0x2e, 0x00, 0x2e, 0x80, 0x2e, 0x1a, 0x00, 0xc8, 0x2e, 0x00, 0x2e,
   0xc8, 0x2e, 0x00, 0x2e, 0xc8, 0x2e, 0x00, 0x2e, 0xc8, 0x2e, 0x00, 0x2e,

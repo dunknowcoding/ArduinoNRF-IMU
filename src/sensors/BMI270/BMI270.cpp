@@ -20,12 +20,47 @@ bool BMI270::begin() {
 }
 
 bool BMI270::beginI2C(TwoWire& wire, uint8_t address) {
+  lastStage_ = Stage::None;
   bus_.beginI2C(wire, address, clockHz_);
   bus_.recoverBus();
   if (!isConnected()) {
+    lastStage_ = Stage::NotConnected;
     return false;
   }
-  return reset() && uploadConfiguration() && configureDefaults();
+  if (!reset()) {
+    lastStage_ = Stage::ResetFailed;
+    return false;
+  }
+  if (!uploadConfiguration()) {
+    // uploadConfiguration() distinguishes these itself; if it got as far as
+    // asking the chip whether the blob took, the transfer worked.
+    if (lastStage_ != Stage::ConfigNotLoaded &&
+        lastStage_ != Stage::ConfigFileStub) {
+      lastStage_ = Stage::ConfigUpload;
+    }
+    return false;
+  }
+  if (!configureDefaults()) {
+    lastStage_ = Stage::Defaults;
+    return false;
+  }
+  return true;
+}
+
+const char* BMI270::lastStageText() const {
+  switch (lastStage_) {
+    case Stage::None:            return "no error";
+    case Stage::NotConnected:    return "WHO_AM_I did not read 0x24 - wrong address, "
+                                        "or the part is not a BMI270";
+    case Stage::ResetFailed:     return "soft reset issued but the chip did not come back";
+    case Stage::ConfigFileStub:  return "the bundled configuration image is a "
+                                        "placeholder, not Bosch's 8192-byte file - "
+                                        "the part cannot start without it";
+    case Stage::ConfigUpload:    return "the configuration blob would not transfer";
+    case Stage::ConfigNotLoaded: return "blob sent, but the chip never reported it loaded";
+    case Stage::Defaults:        return "configured, but the default settings would not apply";
+  }
+  return "unknown";
 }
 
 bool BMI270::beginSPI(SPIClass& spi, uint8_t csPin) {
@@ -51,8 +86,24 @@ bool BMI270::reset() {
   if (bus_.writeRegister(CMD, CMD_SOFT_RESET) != IMUStatus::Ok) {
     return false;
   }
-  delay(20);
-  return isConnected();
+
+  // Poll for the chip to come back rather than assuming a fixed delay is
+  // enough.
+  //
+  // A soft reset drops the BMI270 into suspend and it NACKs everything until
+  // it is ready again; the datasheet's 2 ms is a minimum, not a guarantee, and
+  // on a shared bus it is routinely longer. Checking once after 20 ms meant a
+  // perfectly good part - one reading 0x24 to a bus scanner all day - was
+  // reported as "did not come back" and bring-up stopped there.
+  //
+  // Polling costs nothing when the chip is quick and rescues the case where it
+  // is not.
+  const uint32_t deadline = millis() + 300;
+  while (millis() < deadline) {
+    delay(5);
+    if (isConnected()) return true;
+  }
+  return false;
 }
 
 bool BMI270::writeConfigChunk(uint16_t index, const uint8_t* data,
@@ -68,6 +119,23 @@ bool BMI270::writeConfigChunk(uint16_t index, const uint8_t* data,
 }
 
 bool BMI270::uploadConfiguration() {
+  // The BMI270 has no usable function until an 8192-byte configuration image
+  // from Bosch has been loaded into it. kConfigFile is currently a few hundred
+  // bytes - a placeholder, not that image.
+  //
+  // Uploading it succeeds at the bus level, every write is acknowledged, and
+  // then INTERNAL_STATUS never reports init_ok because the chip was handed
+  // something that is not firmware. That failure is indistinguishable from a
+  // wiring fault unless you happen to count the bytes, so say it plainly here
+  // rather than letting the caller conclude their sensor is broken.
+  //
+  // Fixing this means vendoring bmi270_config_file[] from the Bosch Sensortec
+  // BMI270 API (BSD-3-Clause) into BMI270_Config.h.
+  if (sizeof(kConfigFile) < 8192u) {
+    lastStage_ = Stage::ConfigFileStub;
+    return false;
+  }
+
   if (bus_.writeRegister(PWR_CONF, 0x00) != IMUStatus::Ok) {
     return false;
   }
@@ -91,7 +159,11 @@ bool BMI270::uploadConfiguration() {
     return false;
   }
   delay(150);
-  return configurationLoaded();
+  if (!configurationLoaded()) {
+    lastStage_ = Stage::ConfigNotLoaded;
+    return false;
+  }
+  return true;
 }
 
 bool BMI270::configurationLoaded() {

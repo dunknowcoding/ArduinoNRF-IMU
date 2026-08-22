@@ -15,6 +15,21 @@ class BMI270 : public IMUSensor {
 
   bool begin() override;
   bool beginI2C(TwoWire& wire, uint8_t address) override;
+
+  // Which stage of bring-up failed. begin() returning false says nothing about
+  // whether the part is absent, refused its identity check, or choked part way
+  // through the 8 KB configuration upload - and those need different fixes.
+  enum class Stage : uint8_t {
+    None,
+    NotConnected,     // WHO_AM_I did not read back 0x24
+    ResetFailed,      // soft reset issued, chip did not come back
+    ConfigFileStub,   // the bundled configuration image is a placeholder
+    ConfigUpload,     // the configuration blob did not transfer
+    ConfigNotLoaded,  // blob sent, but INTERNAL_STATUS never reported ready
+    Defaults          // configured, but the default settings would not apply
+  };
+  Stage lastStage() const { return lastStage_; }
+  const char* lastStageText() const;
   bool beginSPI(SPIClass& spi, uint8_t csPin) override;
   uint8_t whoAmI() override;
   bool isConnected() override;
@@ -42,6 +57,7 @@ class BMI270 : public IMUSensor {
   bool readRaw(RawSample& out);
 
  private:
+  Stage lastStage_ = Stage::None;
   bool configureDefaults();
   bool uploadConfiguration();
   bool writeConfigChunk(uint16_t index, const uint8_t* data, uint16_t len);
