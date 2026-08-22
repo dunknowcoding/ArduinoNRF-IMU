@@ -72,6 +72,28 @@ class BNO08x : public IMUSensor {
   void configurePins(int8_t interruptPin, int8_t resetPin = -1,
                      int8_t wakePin = -1);
   bool hardwareReset(uint16_t bootDelayMs = 300);
+
+  // Why the last begin/beginI2C failed. A bare bool cannot tell "nothing is
+  // there" from "something is there but is not speaking SHTP", and those two
+  // send you to opposite ends of the bench.
+  enum class Error : uint8_t {
+    None,
+    ResetFailed,
+    NoResponse,
+    NoProductId,
+    ReportEnableFailed
+  };
+  Error lastError() const { return lastError_; }
+
+  // The raw Wire::endTransmission() code behind a NoResponse: 2 = nobody at
+  // that address, 3 = there but rejected the data, 4 = bus fault, 5 = timeout.
+  uint8_t lastWireError() const { return lastWireError_; }
+  const char* lastErrorText() const;
+
+  // Clock this driver applies in beginI2C(). Zero, the default, means "leave
+  // whatever the caller configured alone" - which matters on a shared bus
+  // whose slowest device sets the rate.
+  void setBusClockHz(uint32_t hz) { busClockHz_ = hz; }
   bool interruptAsserted() const;
   void setAwake(bool awake);
   bool tareNow(bool zAxisOnly = false);
@@ -147,6 +169,9 @@ class BNO08x : public IMUSensor {
   uint8_t gyroAccuracy_ = 0;
   uint8_t magAccuracy_ = 0;
   uint8_t lastCommandStatus_ = 0xFF;
+  Error lastError_ = Error::None;
+  uint8_t lastWireError_ = 0;
+  uint32_t busClockHz_ = 0;   // 0 = do not touch the caller's clock
   int8_t interruptPin_ = -1;
   int8_t resetPin_ = -1;
   int8_t wakePin_ = -1;

@@ -35,18 +35,64 @@ bool BNO08x::beginI2C(TwoWire& wire, uint8_t address) {
   address_ = address;
   productValid_ = false;
   resetSeen_ = false;
+  lastError_ = Error::None;
   for (uint8_t& sequence : txSequence_) sequence = 0;
-  wire_->begin();
-  wire_->setClock(400000);
 
-  if (resetPin_ >= 0 && !hardwareReset()) return false;
-  if (!softReset() || !requestProductId()) return false;
+  // begin() is safe to repeat - every core treats a second call on a live bus
+  // as a no-op - but it takes no pins, so it can only ever open the DEFAULT
+  // SDA/SCL. A sketch using any other pins must call Wire.begin(sda, scl)
+  // itself before getting here; passing a TwoWire& is what says "I have set
+  // this up". Deliberately no setClock() any more: forcing 400 kHz threw away
+  // a caller's deliberate choice of a slower clock for long wires or a
+  // marginal bus. Use setBusClockHz() if you want this driver to set it.
+  wire_->begin();
+  if (busClockHz_ != 0) wire_->setClock(busClockHz_);
+
+  if (resetPin_ >= 0 && !hardwareReset()) {
+    lastError_ = Error::ResetFailed;
+    return false;
+  }
+  if (!softReset()) {
+    // softReset() only fails when the very first write is not acknowledged,
+    // so at this point the chip is absent, at another address, or not in I2C
+    // mode at all - on the BNO085 that means PS0/PS1 are not both low.
+    lastError_ = Error::NoResponse;
+    return false;
+  }
+  if (!requestProductId()) {
+    // It acknowledged the write but never returned a product ID, so something
+    // is on the bus and talking, just not SHTP.
+    lastError_ = Error::NoProductId;
+    return false;
+  }
   bool ok = true;
   ok &= enableReport(SENSOR_ACCELEROMETER, reportIntervalUs_);
   ok &= enableReport(SENSOR_GYROSCOPE, reportIntervalUs_);
   ok &= enableReport(SENSOR_MAGNETIC_FIELD, reportIntervalUs_);
   ok &= enableReport(SENSOR_ROTATION_VECTOR, reportIntervalUs_);
+  if (!ok) lastError_ = Error::ReportEnableFailed;
   return ok;
+}
+
+const char* BNO08x::lastErrorText() const {
+  switch (lastError_) {
+    case Error::None:               return "no error";
+    case Error::ResetFailed:        return "the hardware reset pin did not work";
+    case Error::NoResponse:
+      switch (lastWireError_) {
+        case 2:  return "nothing acknowledged that address - wrong address, or "
+                        "PS0/PS1 not both LOW so it is not in I2C mode";
+        case 3:  return "the address answered but the data was rejected - it is "
+                        "there but not accepting SHTP";
+        case 4:  return "the I2C peripheral reported a bus fault, not a refusal";
+        case 5:  return "the I2C transfer timed out";
+        default: return "no acknowledgement";
+      }
+    case Error::NoProductId:        return "acknowledged but sent no product ID - "
+                                           "on the bus but not speaking SHTP";
+    case Error::ReportEnableFailed: return "opened, but a sensor report would not enable";
+  }
+  return "unknown";
 }
 
 void BNO08x::configurePins(int8_t interruptPin, int8_t resetPin,
@@ -112,7 +158,11 @@ bool BNO08x::sendPacket(uint8_t channel, const uint8_t* payload,
   wire_->write(channel);
   wire_->write(txSequence_[channel]++);
   if (length != 0) wire_->write(payload, length);
-  return wire_->endTransmission() == 0;
+  // Keep the raw code. "begin() failed" is not a diagnosis; 2 (nobody at that
+  // address) and 3 (there, but rejecting the data) send you to opposite ends
+  // of the bench, and 4 means the peripheral itself is unhappy.
+  lastWireError_ = wire_->endTransmission();
+  return lastWireError_ == 0;
 }
 
 bool BNO08x::readPayload(uint16_t length) {
