@@ -48,6 +48,21 @@ bool BNO08x::beginI2C(TwoWire& wire, uint8_t address) {
   wire_->begin();
   if (busClockHz_ != 0) wire_->setClock(busClockHz_);
 
+  // Let the controller settle, then spend one throwaway transaction on it.
+  //
+  // The first transfer after Wire.begin() is unreliable on ESP32 - it comes
+  // back NACKed or with a bus fault on a bus that is demonstrably fine a
+  // millisecond later. A sketch that happens to do something else first never
+  // notices; one that calls begin() immediately gets an intermittent "not
+  // found" on a healthy sensor, which is a miserable thing to debug.
+  //
+  // The driver cannot rely on the caller having warmed the bus, so it warms
+  // it here. An address probe costs microseconds and is discarded.
+  delay(10);
+  wire_->beginTransmission(address_);
+  (void)wire_->endTransmission();
+  delay(5);
+
   if (resetPin_ >= 0 && !hardwareReset()) {
     lastError_ = Error::ResetFailed;
     return false;
