@@ -599,7 +599,7 @@ required, you supply it and the driver loads it for you.
 
 | Sensor | Image | Where it comes from |
 | --- | --- | --- |
-| **BMI270** | 8192 bytes, required for **any** output | [Bosch Sensortec BMI270 API](https://github.com/boschsensortec/BMI270_SensorAPI) — `bmi270_config_file[]` in `bmi270.c`, BSD-3-Clause |
+| **BMI270** | required for **any** output | [Bosch Sensortec BMI270 API](https://github.com/boschsensortec/BMI270_SensorAPI), BSD-3-Clause — see the variants below |
 
 No other supported sensor needs one.
 
@@ -634,6 +634,21 @@ your image. If it says `not_init`, the core is not running — the die is a clon
 or is faulty — and no amount of driver work will change that. Boards sold as
 BMI270 that carry the register map without a working core do exist; they answer
 `CHIP_ID 0x24` and hold every configuration register perfectly.
+
+### Which image
+
+Bosch ships several, matched to different BMI270 builds. They are not
+interchangeable, and only one will be right for your part:
+
+| File | Array | Size |
+| --- | --- | --- |
+| `bmi270.c` | `bmi270_config_file[]` | 8192 |
+| `bmi270_legacy.c` | `bmi270_legacy_config_file[]` | 8192 |
+| `bmi270_context.c` | `bmi270_context_config_file[]` | 8192 |
+| `bmi270_maximum_fifo.c` | `bmi270_maximum_fifo_config_file[]` | 328 |
+
+Start with `bmi270.c`. If the chip answers `init_err` the image reached it and
+was rejected, so try another. If it answers `not_init`, see below.
 
 ### Supplying it
 

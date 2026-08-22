@@ -70,9 +70,9 @@ const char* BMI270::lastStageText() const {
     case Stage::NotConnected:    return "WHO_AM_I did not read 0x24 - wrong address, "
                                         "or the part is not a BMI270";
     case Stage::ResetFailed:     return "soft reset issued but the chip did not come back";
-    case Stage::ConfigFileStub:  return "no configuration image supplied - a BMI270 "
-                                        "does nothing until Bosch's 8192-byte file is "
-                                        "loaded; call setConfigImage() first";
+    case Stage::ConfigFileStub:  return "no usable configuration image supplied - a "
+                                        "BMI270 does nothing until one of Bosch's "
+                                        "images is loaded; call setConfigImage() first";
     case Stage::ConfigUpload:    return "the configuration blob would not transfer";
     case Stage::ConfigNotLoaded:
       switch (lastInternalStatus_ & 0x0Fu) {
@@ -149,7 +149,14 @@ bool BMI270::uploadConfiguration() {
   // The image belongs to the caller - see BMI270_Config.h for why this library
   // ships none of it. Without one there is nothing to upload and nothing the
   // part can do, so say that plainly instead of pretending to try.
-  if (configImage_ == nullptr || configImageLength_ < 8192u) {
+  //
+  // Do not police the length beyond "present and even". Bosch ships several
+  // images for this chip and they are not all the same size: the standard,
+  // legacy and context builds are 8192 bytes, while maximum_fifo is 328. A
+  // guard demanding 8192 would reject a perfectly good image. The chip does
+  // its own validation and reports init_err if it dislikes what it got.
+  if (configImage_ == nullptr || configImageLength_ == 0 ||
+      (configImageLength_ % 2u) != 0u) {
     lastStage_ = Stage::ConfigFileStub;
     return false;
   }
