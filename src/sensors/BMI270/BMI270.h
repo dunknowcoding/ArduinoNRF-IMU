@@ -42,6 +42,21 @@ class BMI270 : public IMUSensor {
   };
   Stage lastStage() const { return lastStage_; }
   const char* lastStageText() const;
+
+  // The raw INTERNAL_STATUS byte from the last bring-up attempt. Bits [3:0]
+  // are a message field: 0 not_init, 1 init_ok, 2 init_err, 3 drv_err,
+  // 4 sns_stop, 5 nvm_error.
+  //
+  // Worth reading when begin() fails. not_init means the part never started
+  // initialising - the configuration image never reached it. init_err means it
+  // received an image and rejected it, which is a different problem entirely.
+  uint8_t internalStatus() const { return lastInternalStatus_; }
+
+  // The BMI270's step counter, gesture and motion detectors all run on its
+  // internal core, so none of them exist until a configuration image has been
+  // loaded - see setConfigImage(). There is no API for them here because there
+  // is nothing to talk to without that image.
+
   bool beginSPI(SPIClass& spi, uint8_t csPin) override;
   uint8_t whoAmI() override;
   bool isConnected() override;

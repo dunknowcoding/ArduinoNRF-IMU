@@ -178,10 +178,25 @@ IMUStatus IMUBus::ping() {
 // ---------------------------------------------------------------- I2C ------
 
 IMUStatus IMUBus::i2cWrite(uint8_t reg, const uint8_t* buffer, size_t len) {
-  wire_->beginTransmission(address_);
-  wire_->write(reg);
-  wire_->write(buffer, len);
-  return (wire_->endTransmission() == 0) ? IMUStatus::Ok : IMUStatus::BusError;
+  // Retry a refused write, the same way i2cRead retries its addressing phase.
+  //
+  // A single dropped write is not a dead device, and treating it as one is
+  // ruinous for anything that writes a lot. Measured on a healthy bench bus, a
+  // BMI270 configuration upload - roughly 1500 transactions - saw fifteen
+  // refusals. One of them landed on INIT_CTRL, so the part was never told to
+  // begin initialising: the whole 8192-byte image went nowhere and the chip
+  // reported not_init, which reads exactly like a sensor that ignored you.
+  //
+  // Three attempts. The bus recovers within a couple of milliseconds or it is
+  // genuinely broken.
+  for (uint8_t attempt = 0; attempt < 3; ++attempt) {
+    wire_->beginTransmission(address_);
+    wire_->write(reg);
+    if (len != 0) wire_->write(buffer, len);
+    if (wire_->endTransmission() == 0) return IMUStatus::Ok;
+    delay(2);
+  }
+  return IMUStatus::BusError;
 }
 
 IMUStatus IMUBus::i2cRead(uint8_t reg, uint8_t* buffer, size_t len) {
