@@ -83,6 +83,14 @@ class BNO08x : public IMUSensor {
     NoProductId,
     ReportEnableFailed
   };
+  // Optional bring-up trace. SHTP failures are almost never visible from the
+  // outside - the chip is on the bus, it acknowledges, and then nothing works
+  // - so point this at Serial and the sequence explains itself.
+  //
+  //   imu.setDebugStream(&Serial);
+  //   imu.begin();
+  void setDebugStream(Print* out) { debug_ = out; }
+
   Error lastError() const { return lastError_; }
 
   // The raw Wire::endTransmission() code behind a NoResponse: 2 = nobody at
@@ -171,6 +179,7 @@ class BNO08x : public IMUSensor {
   uint8_t gyroAccuracy_ = 0;
   uint8_t magAccuracy_ = 0;
   uint8_t lastCommandStatus_ = 0xFF;
+  Print* debug_ = nullptr;
   Error lastError_ = Error::None;
   uint8_t lastWireError_ = 0;
   uint32_t busClockHz_ = 0;   // 0 = do not touch the caller's clock

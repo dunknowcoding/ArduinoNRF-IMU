@@ -65,6 +65,7 @@ bool BNO08x::beginI2C(TwoWire& wire, uint8_t address) {
   // Reads are cheap and a NACK just means the queue is empty, so drain until
   // it goes quiet and start from a known position.
   drainQueue(120);
+  if (debug_ != nullptr) debug_->println(F("  [b] pre-reset drain done"));
 
   if (!softReset()) {
     // softReset() only fails when the very first write is not acknowledged,
@@ -173,18 +174,39 @@ uint8_t BNO08x::drainQueue(uint16_t budgetMs) {
 
 bool BNO08x::softReset() {
   const uint8_t reset = 1;
-  productValid_ = false;   // whatever we knew belongs to the previous boot
+
+  // Clear the flag first: the chip announced a reset-complete during its
+  // power-on boot as well, and mistaking that one for ours would mean
+  // carrying on before this reset had even started.
+  resetSeen_ = false;
   if (!sendPacket(CHANNEL_EXECUTABLE, &reset, 1)) return false;
   delay(100);
 
-  // After a reset the device re-queues its SHTP advertisement - a couple of
-  // hundred bytes - and then a reset-complete on the executable channel.
-  // Draining until the first empty read gave up too early: the queue is
-  // legitimately empty for short stretches while the firmware reboots, so the
-  // old loop returned with the advertisement still pending and every later
-  // read landed mid-packet. Drain on a deadline instead, and stop as soon as
-  // the reset-complete has been seen.
-  drainQueue(250);
+  // Wait for the chip to say it is back, rather than guessing at a delay.
+  //
+  // While it reboots it NACKs every read, so an empty queue means "still
+  // booting", not "nothing left to read". Treating a few empty reads as
+  // "drained" returned within milliseconds and left the caller talking to a
+  // chip that was not listening yet: the next write came back refused with
+  // wire code 4 and bring-up failed, with the device perfectly healthy and
+  // about to announce itself.
+  //
+  // The reset-complete report on the executable channel is that
+  // announcement. Typical is well under 200 ms; the deadline is generous
+  // because failing here costs the whole bring-up.
+  const uint32_t deadline = millis() + 800;
+  while (millis() < deadline && !resetSeen_) {
+    if (!receivePacket()) delay(5);
+  }
+  if (debug_ != nullptr) {
+    debug_->println(resetSeen_ ? F("  [b] reset complete seen")
+                               : F("  [b] no reset-complete - carrying on"));
+  }
+
+  // Then take whatever else the reboot queued, so the caller starts on a
+  // packet boundary rather than mid-stream.
+  drainQueue(200);
+  if (debug_ != nullptr) debug_->println(F("  [b] post-reset drain done"));
   delay(20);
   return true;
 }
@@ -203,7 +225,31 @@ bool BNO08x::sendPacket(uint8_t channel, const uint8_t* payload,
   // address) and 3 (there, but rejecting the data) send you to opposite ends
   // of the bench, and 4 means the peripheral itself is unhappy.
   lastWireError_ = wire_->endTransmission();
-  return lastWireError_ == 0;
+  if (lastWireError_ == 0) return true;
+
+  // A write issued straight after a run of NACKed reads is refused with code
+  // 4 - the controller has not settled yet. That is exactly the position
+  // requestProductId() is in, arriving immediately after a drain loop, and a
+  // single refusal there failed the whole bring-up while the chip sat waiting
+  // to answer. Rebuild the frame and try again rather than giving up on it.
+  for (uint8_t retry = 0; retry < 3; ++retry) {
+    delay(4);
+    wire_->beginTransmission(address_);
+    wire_->write(static_cast<uint8_t>(packetLength));
+    wire_->write(static_cast<uint8_t>(packetLength >> 8));
+    wire_->write(channel);
+    wire_->write(txSequence_[channel]++);
+    if (length != 0) wire_->write(payload, length);
+    lastWireError_ = wire_->endTransmission();
+    if (lastWireError_ == 0) return true;
+  }
+  if (debug_ != nullptr) {
+    debug_->print(F("    tx ch"));
+    debug_->print(channel);
+    debug_->print(F(" refused, wire code "));
+    debug_->println(lastWireError_);
+  }
+  return false;
 }
 
 // Largest payload slice we can ask for in one transaction. Every read returns
@@ -270,7 +316,16 @@ bool BNO08x::readPayload(uint16_t length) {
     for (uint8_t retry = 0; retry < 3 && !got; ++retry) {
       got = (wire_->requestFrom(address_, requested, true) == requested);
     }
-    if (!got) return false;
+    if (!got) {
+      if (debug_ != nullptr) {
+        debug_->print(F("    rx chunk failed, "));
+        debug_->print(length - offset);
+        debug_->print(F(" of "));
+        debug_->print(length);
+        debug_->println(F(" bytes unread - packet abandoned"));
+      }
+      return false;
+    }
 
     for (uint8_t i = 0; i < 4; ++i) (void)wire_->read();
     for (uint8_t i = 0; i < chunk; ++i) {
@@ -291,12 +346,19 @@ bool BNO08x::receivePacket() {
   // poll, so paying an I2C timeout here just to ask twice slows every caller
   // down for nothing.
   if (wire_->requestFrom(address_, static_cast<uint8_t>(4), true) != 4) {
-    return false;
+    return false;   // queue empty; too common to be worth tracing
   }
   for (uint8_t i = 0; i < 4; ++i) header_[i] = static_cast<uint8_t>(wire_->read());
   uint16_t packetLength = (static_cast<uint16_t>(header_[1]) << 8) | header_[0];
   packetLength &= 0x7FFF;
-  if (packetLength < 4 || packetLength > 512) return false;
+  if (packetLength < 4 || packetLength > 512) {
+    if (debug_ != nullptr && packetLength != 0) {
+      debug_->print(F("    rx REJECTED length "));
+      debug_->print(packetLength);
+      debug_->println(F(" - stream out of step"));
+    }
+    return false;
+  }
   if (!readPayload(packetLength - 4)) return false;
   if (header_[2] == CHANNEL_EXECUTABLE && payloadLength_ > 0 && payload_[0] == 1) {
     resetSeen_ = true;
@@ -304,7 +366,19 @@ bool BNO08x::receivePacket() {
   // A BNO085 emits advertisement, reset-complete and product ID unprompted
   // after every reset. Capturing the product ID here rather than only inside
   // requestProductId() means a drain loop can no longer discard it.
-  captureProductId();
+  const bool wasProductId = captureProductId();
+  if (debug_ != nullptr) {
+    debug_->print(F("    rx ch"));
+    debug_->print(header_[2]);
+    debug_->print(F(" seq"));
+    debug_->print(header_[3]);
+    debug_->print(F(" len"));
+    debug_->print(packetLength);
+    debug_->print(F(" first "));
+    debug_->print(payloadLength_ > 0 ? payload_[0] : 0, HEX);
+    if (wasProductId) debug_->print(F("   <-- product ID captured"));
+    debug_->println();
+  }
   return true;
 }
 
@@ -314,10 +388,19 @@ bool BNO08x::requestProductId(uint16_t timeoutMs) {
   // time is not harmless: the answer to a repeated request is not another
   // 0xF1, so the old code sat waiting for a report that was never coming
   // again - having thrown the first one away moments earlier.
-  if (productValid_) return true;
+  if (productValid_) {
+    if (debug_ != nullptr) debug_->println(F("  [b] product ID already captured"));
+    return true;
+  }
+  if (debug_ != nullptr) debug_->println(F("  [b] asking for product ID"));
 
+  // Give the controller a moment after the drain loop before writing.
+  delay(4);
   const uint8_t request[2] = {REPORT_PRODUCT_ID_REQUEST, 0};
-  if (!sendPacket(CHANNEL_CONTROL, request, sizeof(request))) return false;
+  if (!sendPacket(CHANNEL_CONTROL, request, sizeof(request))) {
+    if (debug_ != nullptr) debug_->println(F("  [b] request would not send"));
+    return false;
+  }
   uint32_t started = millis();
   while (millis() - started < timeoutMs) {
     if (!receivePacket()) {
