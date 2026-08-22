@@ -16,6 +16,18 @@ class BMI270 : public IMUSensor {
   bool begin() override;
   bool beginI2C(TwoWire& wire, uint8_t address) override;
 
+  // Supply Bosch's 8192-byte configuration image. Required before begin().
+  //
+  // This library does not redistribute other vendors' firmware, so the image
+  // is yours to provide - see BMI270_Config.h for where to get it and what
+  // BSD-3-Clause asks of you. The pointer must stay valid for the life of the
+  // object; pointing it at a PROGMEM array will not work, the bytes have to be
+  // readable directly.
+  void setConfigImage(const uint8_t* image, size_t length) {
+    configImage_ = image;
+    configImageLength_ = length;
+  }
+
   // Which stage of bring-up failed. begin() returning false says nothing about
   // whether the part is absent, refused its identity check, or choked part way
   // through the 8 KB configuration upload - and those need different fixes.
@@ -58,6 +70,9 @@ class BMI270 : public IMUSensor {
 
  private:
   Stage lastStage_ = Stage::None;
+  uint8_t lastInternalStatus_ = 0xFF;
+  const uint8_t* configImage_ = nullptr;
+  size_t configImageLength_ = 0;
   bool configureDefaults();
   bool uploadConfiguration();
   bool writeConfigChunk(uint16_t index, const uint8_t* data, uint16_t len);

@@ -13,10 +13,27 @@ inline int16_t le16(const uint8_t* p) {
 }  // namespace
 
 bool BMI270::begin() {
-  if (beginI2C(Wire, kAddrSDOLow)) {
-    return true;
+  // Find out which address answers before committing to a full bring-up.
+  //
+  // Trying the primary and falling through to the alternate meant every board
+  // strapped to the alternate paid for a failed init first - a soft reset and
+  // an 8 KB upload aimed at nothing - and, worse, the NACK from that attempt
+  // leaves the controller briefly unwilling, so the identity read on the
+  // correct address then failed too. The part was reported absent while
+  // answering perfectly.
+  //
+  // A ping is one addressing phase and leaves no state behind.
+  bus_.beginI2C(Wire, kAddrSDOLow, clockHz_);
+  const bool low = (bus_.ping() == IMUStatus::Ok);
+  if (!low) {
+    bus_.beginI2C(Wire, kAddrSDOHigh, clockHz_);
+    if (bus_.ping() != IMUStatus::Ok) {
+      lastStage_ = Stage::NotConnected;
+      return false;   // neither address answers; nothing is there
+    }
+    return beginI2C(Wire, kAddrSDOHigh);
   }
-  return beginI2C(Wire, kAddrSDOHigh);
+  return beginI2C(Wire, kAddrSDOLow);
 }
 
 bool BMI270::beginI2C(TwoWire& wire, uint8_t address) {
@@ -53,11 +70,19 @@ const char* BMI270::lastStageText() const {
     case Stage::NotConnected:    return "WHO_AM_I did not read 0x24 - wrong address, "
                                         "or the part is not a BMI270";
     case Stage::ResetFailed:     return "soft reset issued but the chip did not come back";
-    case Stage::ConfigFileStub:  return "the bundled configuration image is a "
-                                        "placeholder, not Bosch's 8192-byte file - "
-                                        "the part cannot start without it";
+    case Stage::ConfigFileStub:  return "no configuration image supplied - a BMI270 "
+                                        "does nothing until Bosch's 8192-byte file is "
+                                        "loaded; call setConfigImage() first";
     case Stage::ConfigUpload:    return "the configuration blob would not transfer";
-    case Stage::ConfigNotLoaded: return "blob sent, but the chip never reported it loaded";
+    case Stage::ConfigNotLoaded:
+      switch (lastInternalStatus_ & 0x0Fu) {
+        case 0x00: return "blob sent, but the chip still reports not_init - the "
+                          "upload did not reach it";
+        case 0x02: return "the chip reports init_err - it received an image but "
+                          "rejected it";
+        case 0x03: return "the chip reports drv_err";
+        default:   return "blob sent, but the chip never reported it loaded";
+      }
     case Stage::Defaults:        return "configured, but the default settings would not apply";
   }
   return "unknown";
@@ -119,19 +144,10 @@ bool BMI270::writeConfigChunk(uint16_t index, const uint8_t* data,
 }
 
 bool BMI270::uploadConfiguration() {
-  // The BMI270 has no usable function until an 8192-byte configuration image
-  // from Bosch has been loaded into it. kConfigFile is currently a few hundred
-  // bytes - a placeholder, not that image.
-  //
-  // Uploading it succeeds at the bus level, every write is acknowledged, and
-  // then INTERNAL_STATUS never reports init_ok because the chip was handed
-  // something that is not firmware. That failure is indistinguishable from a
-  // wiring fault unless you happen to count the bytes, so say it plainly here
-  // rather than letting the caller conclude their sensor is broken.
-  //
-  // Fixing this means vendoring bmi270_config_file[] from the Bosch Sensortec
-  // BMI270 API (BSD-3-Clause) into BMI270_Config.h.
-  if (sizeof(kConfigFile) < 8192u) {
+  // The image belongs to the caller - see BMI270_Config.h for why this library
+  // ships none of it. Without one there is nothing to upload and nothing the
+  // part can do, so say that plainly instead of pretending to try.
+  if (configImage_ == nullptr || configImageLength_ < 8192u) {
     lastStage_ = Stage::ConfigFileStub;
     return false;
   }
@@ -145,12 +161,12 @@ bool BMI270::uploadConfiguration() {
   }
 
   constexpr uint16_t kChunk = 16;
-  for (uint16_t i = 0; i < sizeof(kConfigFile); i += kChunk) {
-    uint16_t len = sizeof(kConfigFile) - i;
+  for (uint16_t i = 0; i < configImageLength_; i += kChunk) {
+    uint16_t len = static_cast<uint16_t>(configImageLength_ - i);
     if (len > kChunk) {
       len = kChunk;
     }
-    if (!writeConfigChunk(i, &kConfigFile[i], len)) {
+    if (!writeConfigChunk(i, &configImage_[i], len)) {
       return false;
     }
   }
@@ -167,11 +183,22 @@ bool BMI270::uploadConfiguration() {
 }
 
 bool BMI270::configurationLoaded() {
-  uint8_t status = 0;
-  if (bus_.readRegister(INTERNAL_STATUS, status) != IMUStatus::Ok) {
-    return false;
+  // INTERNAL_STATUS bits [3:0] are a message field, not flags: 0 = not_init,
+  // 1 = init_ok, 2 = init_err, 3 = drv_err, and so on. Keep the raw byte so a
+  // failure can say which of those it was instead of just "no".
+  //
+  // Poll rather than read once: the chip finishes its self-configuration in
+  // its own time after INIT_CTRL is set.
+  const uint32_t deadline = millis() + 400;
+  for (;;) {
+    uint8_t status = 0;
+    if (bus_.readRegister(INTERNAL_STATUS, status) == IMUStatus::Ok) {
+      lastInternalStatus_ = status;
+      if ((status & 0x0Fu) == 0x01u) return true;   // init_ok
+    }
+    if (millis() >= deadline) return false;
+    delay(5);
   }
-  return (status & INTERNAL_STATUS_INIT_OK) != 0;
 }
 
 bool BMI270::configureDefaults() {

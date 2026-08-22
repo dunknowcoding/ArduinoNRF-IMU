@@ -587,3 +587,49 @@ The MPU-6500/MPU-9250 API includes:
 
 See the `GY9250_SPI`, `GY9250_DataReadyInterrupt`, and `GY9250_FSYNC`
 examples for these paths.
+
+---
+
+## Sensors that need firmware this library does not ship
+
+A few parts are not usable until a firmware image from their manufacturer has
+been uploaded into them. Those images are the vendor's copyrighted work, and
+this library does not redistribute other people's firmware — so where one is
+required, you supply it and the driver loads it for you.
+
+| Sensor | Image | Where it comes from |
+| --- | --- | --- |
+| **BMI270** | 8192 bytes, required for **any** output | [Bosch Sensortec BMI270 API](https://github.com/boschsensortec/BMI270_SensorAPI) — `bmi270_config_file[]` in `bmi270.c`, BSD-3-Clause |
+
+No other supported sensor needs one.
+
+### What "required for any output" means
+
+Measured on real silicon with no image loaded: `CHIP_ID` reads `0x24`,
+`INTERNAL_STATUS` reads `not_init`, the `acc_rdy` and `gyr_rdy` bits never set,
+and every data register stays at exactly zero. There is no reduced mode that
+works without it — not even raw acceleration. A BMI270 with no image is inert.
+
+### Supplying it
+
+```cpp
+#include <BMI270.h>
+#include "bmi270_config_file.h"   // your copy, kept with Bosch's licence text
+
+BMI270 imu;
+
+void setup() {
+  Wire.begin();
+  imu.setConfigImage(bmi270_config_file, sizeof(bmi270_config_file));
+  if (!imu.begin()) {
+    Serial.println(imu.lastStageText());   // says exactly what went wrong
+  }
+}
+```
+
+Keep Bosch's copyright notice and licence with the file — BSD-3-Clause asks for
+that, and it is the reason the image is yours to add rather than ours to ship.
+
+Call `setConfigImage()` before `begin()`. Without it `begin()` returns false and
+`lastStageText()` says *"no configuration image supplied"* rather than leaving
+you to wonder whether the sensor is faulty.
