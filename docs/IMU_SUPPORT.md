@@ -633,3 +633,79 @@ that, and it is the reason the image is yours to add rather than ours to ship.
 Call `setConfigImage()` before `begin()`. Without it `begin()` returns false and
 `lastStageText()` says *"no configuration image supplied"* rather than leaving
 you to wonder whether the sensor is faulty.
+
+---
+
+## BNO08x reports
+
+The BNO085 and BNO086 are sensor hubs: rather than exposing registers they
+publish *reports*, and you ask for the ones you want. Every report below was
+confirmed delivered by a BNO085 running SH-2 3.2.13.
+
+### Always on after `begin()`
+
+Accelerometer, gyroscope, magnetometer and the rotation vector, at 50 ms.
+`setSampleRateHz(hz)` changes all four together; 100 Hz is the ceiling, set by
+the magnetometer.
+
+### Orientation
+
+| Call | Report | What it gives you |
+| --- | --- | --- |
+| — (default) | rotation vector | full orientation, magnetically referenced |
+| `enableGameRotationVector()` | game rotation vector | no magnetometer, so no compass heading and no magnetic disturbance |
+| `enableGeomagneticRotationVector()` | geomagnetic rotation vector | lower power, slower to settle |
+| `enableArvrRotationVector()` | ARVR-stabilised | the rotation vector with fusion corrections smoothed out |
+| `enableArvrGameRotationVector()` | ARVR-stabilised game | the same for the game vector |
+
+Read them with `quaternion()`, `gameQuaternion()`, `geomagneticQuaternion()`,
+`arvrQuaternion()` and `arvrGameQuaternion()`.
+
+**Which to use:** the ARVR variants exist because the ordinary ones jump when
+the fusion revises its estimate. That jump is invisible in logged data and very
+visible to a person, so use ARVR for anything driving a display or a camera,
+and the plain vectors for anything being recorded or controlled.
+
+### Motion
+
+| Call | Read with |
+| --- | --- |
+| `enableLinearAcceleration()` | `linearAccelMs2()` — acceleration with gravity removed |
+| `enableGravity()` | `gravityMs2()` — the gravity vector alone |
+| `enableGyroscopeUncalibrated()` | `gyroUncalibratedDps()`, `gyroDriftDps()` |
+| `enableMagneticFieldUncalibrated()` | `magUncalibratedUt()`, `magHardIronUt()` |
+
+The calibrated reports have the estimated bias already removed. The
+uncalibrated ones hand you the raw value *and* the bias being subtracted, which
+is what you want to judge whether a calibration has settled, or to run your own
+fusion.
+
+### Events
+
+These report only when the event happens, so a still board stays silent. Each
+increments a counter that never resets itself — poll at least as often as
+events can occur.
+
+| Call | Read with |
+| --- | --- |
+| `enableStepCounter()` | `stepCount()` — a running total |
+| `enableStepDetector()` | `stepEvents()` — one per step, as it happens |
+| `enableShakeDetector()` | `shakeEvents()`, `shakeAxes()` (bit 0 X, 1 Y, 2 Z) |
+| `enableStabilityDetector()` | `stabilityEvents()` |
+| `enableStabilityClassifier()` | `stabilityClass()` — on table, stationary, motion |
+| `enableTapDetector()` | `tapCode()` |
+| `enableActivityClassifier()` | `activityClass()`, `activityConfidence(n)` |
+
+### Not offered by this part
+
+`0x14`–`0x16` (raw accelerometer, gyroscope, magnetometer) and `0x2A`
+(gyro-integrated rotation vector) were asked for and never answered. Reports
+needing hardware a BNO085 does not have — pressure, ambient light, humidity,
+proximity, heart rate — are not applicable at all.
+
+### Calibration and tare
+
+`beginCalibration()` / `endCalibration()` / `calibrationComplete()` /
+`saveCalibration()` run the chip's own routine, and `tareNow()` / `saveTare()`
+define the current orientation as zero. Persist a tare only once the mounting
+is final.

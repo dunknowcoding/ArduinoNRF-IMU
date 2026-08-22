@@ -95,6 +95,10 @@ bool BNO08x::beginI2C(TwoWire& wire, uint8_t address) {
     lastError_ = Error::NoProductId;
     return false;
   }
+  // The product-ID exchange has only just finished; let it settle before
+  // sending configuration.
+  delay(20);
+
   bool ok = true;
   ok &= enableReport(SENSOR_ACCELEROMETER, reportIntervalUs_);
   ok &= enableReport(SENSOR_GYROSCOPE, reportIntervalUs_);
@@ -381,6 +385,10 @@ bool BNO08x::receivePacket() {
   // A BNO085 emits advertisement, reset-complete and product ID unprompted
   // after every reset. Capturing the product ID here rather than only inside
   // requestProductId() means a drain loop can no longer discard it.
+  if (header_[2] == CHANNEL_REPORTS && payloadLength_ >= 6 &&
+      payload_[0] == REPORT_BASE_TIMESTAMP) {
+    lastReportId_ = payload_[5];
+  }
   const bool wasProductId = captureProductId();
   if (debug_ != nullptr) {
     debug_->print(F("    rx ch"));
@@ -391,6 +399,14 @@ bool BNO08x::receivePacket() {
     debug_->print(packetLength);
     debug_->print(F(" first "));
     debug_->print(payloadLength_ > 0 ? payload_[0] : 0, HEX);
+    // On the report channel the first byte is only the timestamp wrapper; the
+    // sensor's own report id sits five bytes in, and that is the number you
+    // actually want when working out which features a part is delivering.
+    if (header_[2] == CHANNEL_REPORTS && payloadLength_ >= 6 &&
+        payload_[0] == REPORT_BASE_TIMESTAMP) {
+      debug_->print(F(" report 0x"));
+      debug_->print(payload_[5], HEX);
+    }
     if (wasProductId) debug_->print(F("   <-- product ID captured"));
     debug_->println();
   }
@@ -463,7 +479,19 @@ bool BNO08x::enableReport(uint8_t reportId, uint32_t intervalUs) {
   command[6] = static_cast<uint8_t>(intervalUs >> 8);
   command[7] = static_cast<uint8_t>(intervalUs >> 16);
   command[8] = static_cast<uint8_t>(intervalUs >> 24);
-  return sendPacket(CHANNEL_CONTROL, command, sizeof(command));
+  if (!sendPacket(CHANNEL_CONTROL, command, sizeof(command))) return false;
+
+  // Give the chip a moment to act on it.
+  //
+  // Set Feature is a command, not a register write: the part has to schedule
+  // the report before it will honour the next one. Firing several back to back
+  // with no gap meant later ones were dropped - and since begin() enables four
+  // in a row, a freshly opened sensor delivered nothing at all until the
+  // application happened to call setSampleRateHz() later, by which time the
+  // chip had settled. "begin() succeeded but update() never returns true" is a
+  // miserable thing to debug, and this is the whole of it.
+  delay(5);
+  return true;
 }
 
 bool BNO08x::parseSensorReport(const uint8_t* report, size_t length) {
@@ -479,6 +507,24 @@ bool BNO08x::parseSensorReport(const uint8_t* report, size_t length) {
   if (id == SENSOR_PERSONAL_ACTIVITY_CLASSIFIER && length >= 14) {
     activityClass_ = report[4];
     for (uint8_t i = 0; i < 9; ++i) activityConfidence_[i] = report[5 + i];
+    data_.timestamp = micros();
+    return true;
+  }
+  // Event detectors carry no measurement, only the fact that it happened.
+  if (id == SENSOR_STEP_DETECTOR) {
+    ++stepEvents_;
+    data_.timestamp = micros();
+    return true;
+  }
+  if (id == SENSOR_STABILITY_DETECTOR) {
+    ++stabilityEvents_;
+    data_.timestamp = micros();
+    return true;
+  }
+  if (id == SENSOR_SHAKE_DETECTOR && length >= 6) {
+    // Bits 0..2 of a 16-bit field say which axes the shake was along.
+    shakeAxes_ = static_cast<uint8_t>(le16(&report[4]) & 0x07);
+    ++shakeEvents_;
     data_.timestamp = micros();
     return true;
   }
@@ -525,6 +571,36 @@ bool BNO08x::parseSensorReport(const uint8_t* report, size_t length) {
     q->w = qToFloat(le16(&report[10]), 14);
     q->accuracy = accuracy;
     if (id == SENSOR_ROTATION_VECTOR && length >= 14) {
+      q->accuracyRad = qToFloat(le16(&report[12]), 12);
+    }
+  } else if (id == SENSOR_GYROSCOPE_UNCALIBRATED) {
+    // Rate then drift, six Q9 values in radians per second.
+    if (length < 16) return false;
+    constexpr float kRadToDeg = 57.29577951308232f;
+    gyroUncal_ = Vec3{qToFloat(x, 9) * kRadToDeg, qToFloat(y, 9) * kRadToDeg,
+                      qToFloat(z, 9) * kRadToDeg};
+    gyroDrift_ = Vec3{qToFloat(le16(&report[10]), 9) * kRadToDeg,
+                      qToFloat(le16(&report[12]), 9) * kRadToDeg,
+                      qToFloat(le16(&report[14]), 9) * kRadToDeg};
+  } else if (id == SENSOR_MAGNETIC_FIELD_UNCALIBRATED) {
+    // Field then hard-iron offset, six Q4 values in microtesla.
+    if (length < 16) return false;
+    magUncal_ = Vec3{qToFloat(x, 4), qToFloat(y, 4), qToFloat(z, 4)};
+    magHardIron_ = Vec3{qToFloat(le16(&report[10]), 4),
+                        qToFloat(le16(&report[12]), 4),
+                        qToFloat(le16(&report[14]), 4)};
+  } else if (id == SENSOR_ARVR_ROTATION_VECTOR ||
+             id == SENSOR_ARVR_GAME_ROTATION_VECTOR) {
+    // Same Q14 quaternion layout as the plain rotation vectors.
+    if (length < 12) return false;
+    Quaternion* q = (id == SENSOR_ARVR_ROTATION_VECTOR) ? &arvrQuaternion_
+                                                        : &arvrGameQuaternion_;
+    q->x = qToFloat(x, 14);
+    q->y = qToFloat(y, 14);
+    q->z = qToFloat(z, 14);
+    q->w = qToFloat(le16(&report[10]), 14);
+    q->accuracy = accuracy;
+    if (id == SENSOR_ARVR_ROTATION_VECTOR && length >= 14) {
       q->accuracyRad = qToFloat(le16(&report[12]), 12);
     }
   } else if (id == SENSOR_STEP_COUNTER) {

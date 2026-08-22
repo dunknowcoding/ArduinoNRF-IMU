@@ -37,6 +37,15 @@ static constexpr uint8_t SENSOR_STEP_COUNTER = 0x11;
 static constexpr uint8_t SENSOR_STABILITY_CLASSIFIER = 0x13;
 static constexpr uint8_t SENSOR_PERSONAL_ACTIVITY_CLASSIFIER = 0x1E;
 
+// Verified as delivered by a BNO085 running SH-2 3.2.13.
+static constexpr uint8_t SENSOR_GYROSCOPE_UNCALIBRATED = 0x07;
+static constexpr uint8_t SENSOR_MAGNETIC_FIELD_UNCALIBRATED = 0x0F;
+static constexpr uint8_t SENSOR_STEP_DETECTOR = 0x18;
+static constexpr uint8_t SENSOR_SHAKE_DETECTOR = 0x19;
+static constexpr uint8_t SENSOR_STABILITY_DETECTOR = 0x1C;
+static constexpr uint8_t SENSOR_ARVR_ROTATION_VECTOR = 0x28;
+static constexpr uint8_t SENSOR_ARVR_GAME_ROTATION_VECTOR = 0x29;
+
 static constexpr uint8_t COMMAND_TARE = 0x03;
 static constexpr uint8_t COMMAND_SAVE_DCD = 0x06;
 static constexpr uint8_t COMMAND_ME_CALIBRATION = 0x07;

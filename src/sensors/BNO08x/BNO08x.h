@@ -66,6 +66,49 @@ class BNO08x : public IMUSensor {
   bool enableStabilityClassifier(uint32_t intervalUs = 100000) {
     return enableReport(bno08x::SENSOR_STABILITY_CLASSIFIER, intervalUs);
   }
+  // --- Uncalibrated motion -------------------------------------------------
+  //
+  // The calibrated reports have the estimated bias already removed. These give
+  // you the raw rate or field alongside the bias the chip is subtracting, which
+  // is what you want when judging whether a calibration has settled or feeding
+  // your own fusion.
+
+  bool enableGyroscopeUncalibrated(uint32_t intervalUs) {
+    return enableReport(bno08x::SENSOR_GYROSCOPE_UNCALIBRATED, intervalUs);
+  }
+  bool enableMagneticFieldUncalibrated(uint32_t intervalUs) {
+    return enableReport(bno08x::SENSOR_MAGNETIC_FIELD_UNCALIBRATED, intervalUs);
+  }
+
+  // --- Stabilised orientation ----------------------------------------------
+  //
+  // The ARVR variants are the ordinary rotation vectors with the sudden
+  // corrections smoothed out, so a view built on them does not jump when the
+  // fusion revises its estimate. Use them to drive anything a person looks at.
+
+  bool enableArvrRotationVector(uint32_t intervalUs) {
+    return enableReport(bno08x::SENSOR_ARVR_ROTATION_VECTOR, intervalUs);
+  }
+  bool enableArvrGameRotationVector(uint32_t intervalUs) {
+    return enableReport(bno08x::SENSOR_ARVR_GAME_ROTATION_VECTOR, intervalUs);
+  }
+
+  // --- Event detectors ------------------------------------------------------
+  //
+  // These report only when the event happens, so a still board stays silent.
+  // Each one increments a counter you can poll; there is no queue, so read
+  // them at least as often as events can occur.
+
+  bool enableStepDetector(uint32_t intervalUs = 0) {
+    return enableReport(bno08x::SENSOR_STEP_DETECTOR, intervalUs);
+  }
+  bool enableShakeDetector(uint32_t intervalUs = 0) {
+    return enableReport(bno08x::SENSOR_SHAKE_DETECTOR, intervalUs);
+  }
+  bool enableStabilityDetector(uint32_t intervalUs = 0) {
+    return enableReport(bno08x::SENSOR_STABILITY_DETECTOR, intervalUs);
+  }
+
   bool enableActivityClassifier(uint32_t intervalUs = 100000) {
     return enableReport(bno08x::SENSOR_PERSONAL_ACTIVITY_CLASSIFIER, intervalUs);
   }
@@ -96,6 +139,11 @@ class BNO08x : public IMUSensor {
   // The raw Wire::endTransmission() code behind a NoResponse: 2 = nobody at
   // that address, 3 = there but rejected the data, 4 = bus fault, 5 = timeout.
   uint8_t lastWireError() const { return lastWireError_; }
+
+  // The SH-2 report id of the last sensor report received, whether or not this
+  // driver knows how to decode it. Zero until one arrives. Useful for finding
+  // out which features a particular part actually delivers.
+  uint8_t lastReportId() const { return lastReportId_; }
   const char* lastErrorText() const;
 
   // Clock this driver applies in beginI2C(). Zero, the default, means "leave
@@ -115,6 +163,27 @@ class BNO08x : public IMUSensor {
   bool setPeriodicCalibrationSave(bool enable);
   uint8_t lastCommandStatus() const { return lastCommandStatus_; }
   bool wasReset();
+
+  // Uncalibrated gyroscope, degrees per second, with the drift estimate the
+  // chip is removing from the calibrated report.
+  Vec3 gyroUncalibratedDps() const { return gyroUncal_; }
+  Vec3 gyroDriftDps() const { return gyroDrift_; }
+
+  // Uncalibrated magnetic field in microtesla, with the hard-iron offset.
+  Vec3 magUncalibratedUt() const { return magUncal_; }
+  Vec3 magHardIronUt() const { return magHardIron_; }
+
+  // Stabilised orientation - see enableArvrRotationVector().
+  Quaternion arvrQuaternion() const { return arvrQuaternion_; }
+  Quaternion arvrGameQuaternion() const { return arvrGameQuaternion_; }
+
+  // Event counters. Each rises by one per event; they never reset themselves.
+  uint32_t stepEvents() const { return stepEvents_; }
+  uint32_t shakeEvents() const { return shakeEvents_; }
+  uint32_t stabilityEvents() const { return stabilityEvents_; }
+
+  // Which axes the last shake was along, bit 0 = X, bit 1 = Y, bit 2 = Z.
+  uint8_t shakeAxes() const { return shakeAxes_; }
 
   Quaternion quaternion() const { return quaternion_; }
   Quaternion gameQuaternion() const { return gameQuaternion_; }
@@ -165,6 +234,16 @@ class BNO08x : public IMUSensor {
   uint32_t reportIntervalUs_ = 50000;
 
   ProductInfo product_;
+  Vec3 gyroUncal_{};
+  Vec3 gyroDrift_{};
+  Vec3 magUncal_{};
+  Vec3 magHardIron_{};
+  Quaternion arvrQuaternion_;
+  Quaternion arvrGameQuaternion_;
+  uint32_t stepEvents_ = 0;
+  uint32_t shakeEvents_ = 0;
+  uint32_t stabilityEvents_ = 0;
+  uint8_t shakeAxes_ = 0;
   Quaternion quaternion_;
   Quaternion gameQuaternion_;
   Quaternion geomagneticQuaternion_;
@@ -182,6 +261,7 @@ class BNO08x : public IMUSensor {
   Print* debug_ = nullptr;
   Error lastError_ = Error::None;
   uint8_t lastWireError_ = 0;
+  uint8_t lastReportId_ = 0;
   uint32_t busClockHz_ = 0;   // 0 = do not touch the caller's clock
   int8_t interruptPin_ = -1;
   int8_t resetPin_ = -1;
