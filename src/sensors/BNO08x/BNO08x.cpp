@@ -52,6 +52,20 @@ bool BNO08x::beginI2C(TwoWire& wire, uint8_t address) {
     lastError_ = Error::ResetFailed;
     return false;
   }
+
+  // Clear whatever is already queued before resetting.
+  //
+  // If the MCU has rebooted while the sensor kept running - which is every
+  // upload during development, and every watchdog reset in the field - the
+  // chip is part way through a packet nobody is reading. Reading a header at
+  // that offset yields a nonsense length (26856 bytes, in one measured case),
+  // and every read after it stays out of step. Resetting into that state does
+  // not help, because the reply arrives on the same desynchronised stream.
+  //
+  // Reads are cheap and a NACK just means the queue is empty, so drain until
+  // it goes quiet and start from a known position.
+  drainQueue(120);
+
   if (!softReset()) {
     // softReset() only fails when the very first write is not acknowledged,
     // so at this point the chip is absent, at another address, or not in I2C
@@ -137,13 +151,40 @@ bool BNO08x::beginSPI(SPIClass& spi, uint8_t csPin) {
   return false;  // BNO08x SPI also requires INT, RST and WAKE/PS0 pins.
 }
 
+// Reads packets until the queue stays empty or the budget runs out. Returns
+// how many whole packets were consumed. A rejected header - a length that is
+// absurd because the stream is out of step - counts as progress too, because
+// the read still advanced the device's pointer.
+uint8_t BNO08x::drainQueue(uint16_t budgetMs) {
+  const uint32_t deadline = millis() + budgetMs;
+  uint8_t consumed = 0;
+  uint8_t quiet = 0;
+  while (millis() < deadline && quiet < 3 && consumed < 24) {
+    if (receivePacket()) {
+      ++consumed;
+      quiet = 0;
+    } else {
+      ++quiet;
+      delay(2);
+    }
+  }
+  return consumed;
+}
+
 bool BNO08x::softReset() {
   const uint8_t reset = 1;
+  productValid_ = false;   // whatever we knew belongs to the previous boot
   if (!sendPacket(CHANNEL_EXECUTABLE, &reset, 1)) return false;
   delay(100);
-  for (uint8_t i = 0; i < 8; ++i) {
-    if (!receivePacket()) break;
-  }
+
+  // After a reset the device re-queues its SHTP advertisement - a couple of
+  // hundred bytes - and then a reset-complete on the executable channel.
+  // Draining until the first empty read gave up too early: the queue is
+  // legitimately empty for short stretches while the firmware reboots, so the
+  // old loop returned with the advertisement still pending and every later
+  // read landed mid-packet. Drain on a deadline instead, and stop as soon as
+  // the reset-complete has been seen.
+  drainQueue(250);
   delay(20);
   return true;
 }
@@ -165,13 +206,72 @@ bool BNO08x::sendPacket(uint8_t channel, const uint8_t* payload,
   return lastWireError_ == 0;
 }
 
+// Largest payload slice we can ask for in one transaction. Every read returns
+// a repeated 4-byte header first, so the slice is the buffer minus those four.
+//
+// This used to be hardcoded to 28, the AVR-safe figure. On a core with a 128
+// byte buffer that turned the 276-byte boot advertisement into ten
+// transactions instead of three - and every extra transaction is another
+// chance to hit the empty-queue NACK below.
+static uint8_t bno08xMaxChunk() {
+#if defined(I2C_BUFFER_LENGTH)
+  const uint16_t buffer = I2C_BUFFER_LENGTH;
+#elif defined(BUFFER_LENGTH)
+  const uint16_t buffer = BUFFER_LENGTH;
+#elif defined(SERIAL_BUFFER_SIZE)
+  const uint16_t buffer = 32;
+#else
+  const uint16_t buffer = 32;
+#endif
+  if (buffer <= 8) return 4;
+  const uint16_t usable = buffer - 4;
+  return usable > 124 ? 124 : static_cast<uint8_t>(usable);
+}
+
 bool BNO08x::readPayload(uint16_t length) {
+  const uint8_t maxChunk = bno08xMaxChunk();
   uint16_t offset = 0;
   while (offset < length) {
-    uint8_t chunk = static_cast<uint8_t>(length - offset);
-    if (chunk > 28) chunk = 28;
-    uint8_t requested = static_cast<uint8_t>(chunk + 4);
-    if (wire_->requestFrom(address_, requested, true) != requested) return false;
+    // Narrow AFTER capping, never before.
+    //
+    // This used to read
+    //     uint8_t chunk = (uint8_t)(length - offset);
+    //     if (chunk > maxChunk) chunk = maxChunk;
+    // which truncates the subtraction before the cap can act. Whenever the
+    // bytes remaining were an exact multiple of 256 the cast produced 0, the
+    // cap left it at 0, offset advanced by nothing, and the loop spun for
+    // ever.
+    //
+    // The BNO085's boot advertisement is 276 bytes, so a 272-byte payload
+    // steps 272 -> (uint8_t)272 = 16, then 256 -> (uint8_t)256 = 0, and hangs
+    // on the second iteration - every time, on the very first packet the chip
+    // sends. It only escaped notice because the old read path abandoned the
+    // packet on the first empty-queue NACK and so rarely got this far.
+    const uint16_t remaining = length - offset;
+    const uint8_t chunk = (remaining > maxChunk) ? maxChunk
+                                                 : static_cast<uint8_t>(remaining);
+    const uint8_t requested = static_cast<uint8_t>(chunk + 4);
+
+    // The BNO085 NACKs a read when its output queue is momentarily empty,
+    // which is normal SHTP behaviour rather than a fault - measured at 26 in
+    // 200 attempts on a healthy bus, arriving in runs of up to thirteen.
+    //
+    // Giving up here abandoned the packet halfway through and left the
+    // device's read pointer mid-stream, so nothing afterwards parsed either.
+    // With a 276-byte advertisement needing several transactions, that made a
+    // clean drain unlikely and bring-up failed for reasons that looked like
+    // anything but this. Wait for the device instead.
+    // Retries are not free: a failed requestFrom() can burn the core's whole
+    // I2C timeout, 50 ms by default on ESP32. Eight of those per chunk turned
+    // a three-chunk packet into a second and a half, and two drain loops into
+    // a bring-up that looked like a hang. Three is enough to ride out a busy
+    // moment without that.
+    bool got = false;
+    for (uint8_t retry = 0; retry < 3 && !got; ++retry) {
+      got = (wire_->requestFrom(address_, requested, true) == requested);
+    }
+    if (!got) return false;
+
     for (uint8_t i = 0; i < 4; ++i) (void)wire_->read();
     for (uint8_t i = 0; i < chunk; ++i) {
       uint8_t value = static_cast<uint8_t>(wire_->read());
@@ -185,7 +285,14 @@ bool BNO08x::readPayload(uint16_t length) {
 
 bool BNO08x::receivePacket() {
   if (wire_ == nullptr) return false;
-  if (wire_->requestFrom(address_, static_cast<uint8_t>(4), true) != 4) return false;
+  // A NACK here just means the queue is empty right now; callers poll, so one
+  // short retry is enough to ride out a busy moment without stalling them.
+  // No retry on the header: an empty queue is the common case and callers
+  // poll, so paying an I2C timeout here just to ask twice slows every caller
+  // down for nothing.
+  if (wire_->requestFrom(address_, static_cast<uint8_t>(4), true) != 4) {
+    return false;
+  }
   for (uint8_t i = 0; i < 4; ++i) header_[i] = static_cast<uint8_t>(wire_->read());
   uint16_t packetLength = (static_cast<uint16_t>(header_[1]) << 8) | header_[0];
   packetLength &= 0x7FFF;
@@ -194,10 +301,21 @@ bool BNO08x::receivePacket() {
   if (header_[2] == CHANNEL_EXECUTABLE && payloadLength_ > 0 && payload_[0] == 1) {
     resetSeen_ = true;
   }
+  // A BNO085 emits advertisement, reset-complete and product ID unprompted
+  // after every reset. Capturing the product ID here rather than only inside
+  // requestProductId() means a drain loop can no longer discard it.
+  captureProductId();
   return true;
 }
 
 bool BNO08x::requestProductId(uint16_t timeoutMs) {
+  // The chip volunteers its product ID during boot, so by the time softReset()
+  // has drained the reset traffic we usually have it already. Asking a second
+  // time is not harmless: the answer to a repeated request is not another
+  // 0xF1, so the old code sat waiting for a report that was never coming
+  // again - having thrown the first one away moments earlier.
+  if (productValid_) return true;
+
   const uint8_t request[2] = {REPORT_PRODUCT_ID_REQUEST, 0};
   if (!sendPacket(CHANNEL_CONTROL, request, sizeof(request))) return false;
   uint32_t started = millis();
@@ -206,21 +324,30 @@ bool BNO08x::requestProductId(uint16_t timeoutMs) {
       delay(2);
       continue;
     }
-    if (header_[2] != CHANNEL_CONTROL || payloadLength_ < 14 ||
-        payload_[0] != REPORT_PRODUCT_ID_RESPONSE) {
-      continue;
-    }
-    product_.resetReason = payload_[1];
-    product_.versionMajor = payload_[2];
-    product_.versionMinor = payload_[3];
-    product_.partNumber = le32(&payload_[4]);
-    product_.buildNumber = le32(&payload_[8]);
-    product_.versionPatch = static_cast<uint16_t>(payload_[12]) |
-                            (static_cast<uint16_t>(payload_[13]) << 8);
-    productValid_ = true;
-    return true;
+    // receivePacket() captures a product ID wherever it appears, so there is
+    // nothing to parse here - just wait for it to have landed.
+    if (productValid_) return true;
   }
   return false;
+}
+
+// Fills product_ if the packet currently in the buffer is a product-ID
+// response. Called from receivePacket(), because the BNO085 volunteers this
+// report during boot rather than only when asked - see the note there.
+bool BNO08x::captureProductId() {
+  if (header_[2] != CHANNEL_CONTROL || payloadLength_ < 14 ||
+      payload_[0] != REPORT_PRODUCT_ID_RESPONSE) {
+    return false;
+  }
+  product_.resetReason = payload_[1];
+  product_.versionMajor = payload_[2];
+  product_.versionMinor = payload_[3];
+  product_.partNumber = le32(&payload_[4]);
+  product_.buildNumber = le32(&payload_[8]);
+  product_.versionPatch = static_cast<uint16_t>(payload_[12]) |
+                          (static_cast<uint16_t>(payload_[13]) << 8);
+  productValid_ = true;
+  return true;
 }
 
 uint8_t BNO08x::whoAmI() {

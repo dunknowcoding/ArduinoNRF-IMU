@@ -130,6 +130,8 @@ class BNO08x : public IMUSensor {
 
   bool softReset();
   bool requestProductId(uint16_t timeoutMs = 500);
+  bool captureProductId();
+  uint8_t drainQueue(uint16_t budgetMs);
   bool sendPacket(uint8_t channel, const uint8_t* payload, uint8_t length);
   bool receivePacket();
   bool readPayload(uint16_t length);
