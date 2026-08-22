@@ -76,8 +76,10 @@ const char* BMI270::lastStageText() const {
     case Stage::ConfigUpload:    return "the configuration blob would not transfer";
     case Stage::ConfigNotLoaded:
       switch (lastInternalStatus_ & 0x0Fu) {
-        case 0x00: return "blob sent, but the chip still reports not_init - the "
-                          "upload did not reach it";
+        case 0x00: return "image sent, chip still reports not_init - its internal "
+                          "core is not running. A working BMI270 answers a bad "
+                          "image with init_err, so a part that never leaves "
+                          "not_init is most likely a clone or faulty";
         case 0x02: return "the chip reports init_err - it received an image but "
                           "rejected it";
         case 0x03: return "the chip reports drv_err";

@@ -610,6 +610,31 @@ Measured on real silicon with no image loaded: `CHIP_ID` reads `0x24`,
 and every data register stays at exactly zero. There is no reduced mode that
 works without it — not even raw acceleration. A BMI270 with no image is inert.
 
+### If it still will not start
+
+A BMI270 that has been given a valid image and still reports `not_init` is not
+a driver problem. `internalStatus()` and `lastStageText()` tell you which case
+you are in:
+
+| `INTERNAL_STATUS` low nibble | Meaning | What to do |
+| --- | --- | --- |
+| `0x01` init_ok | working | nothing |
+| `0x02` init_err | the image arrived and was rejected | check you copied the whole 8192 bytes |
+| `0x00` not_init | the internal core never ran | see below |
+
+`not_init` after a complete upload is worth understanding, because it looks
+like a wiring or driver fault and is neither. **A working BMI270 validates what
+it is given** — hand it rubbish and it answers `init_err`. A part that stays at
+`not_init` no matter what you send has never looked at the image at all.
+
+That is straightforward to confirm: reset the part, write `INIT_CTRL = 0x00`,
+send a couple of hundred bytes of nonsense, write `INIT_CTRL = 0x01`, and read
+`INTERNAL_STATUS`. If it says `init_err`, the core is alive and the problem is
+your image. If it says `not_init`, the core is not running — the die is a clone
+or is faulty — and no amount of driver work will change that. Boards sold as
+BMI270 that carry the register map without a working core do exist; they answer
+`CHIP_ID 0x24` and hold every configuration register perfectly.
+
 ### Supplying it
 
 ```cpp
