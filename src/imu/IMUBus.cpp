@@ -76,24 +76,47 @@ static inline void imuWireEnd(TwoWire *wire) {
 #endif
 }
 
+// Recovering a bus that is not stuck is not a no-op, it is damage.
+//
+// The only way to bit-bang the lines is to release the peripheral first, and
+// the only way to bring it back is wire_->begin() - which takes no pins here,
+// so it reopens on the core's DEFAULT SDA/SCL. Any custom pin mapping the
+// sketch chose is silently lost. Worse, on ESP32 core 3.x an end() followed by
+// a pin-less begin() can leave the peripheral in a state where every later
+// transfer returns error 4, so a healthy bus goes permanently dead.
+//
+// Most drivers call this unconditionally at the top of beginI2C(), which meant
+// every single open tore the bus down and rebuilt it. On a bench with a BNO085
+// and a BMI270 sharing one bus, the first driver to initialise killed I2C for
+// everything after it - including itself on the next attempt.
+//
+// So: look before leaping. An idle I2C bus has both lines pulled high. If they
+// are, there is nothing to recover and we must not touch the peripheral.
 IMUStatus IMUBus::recoverBus() {
   if (mode_ != Mode::I2C || wire_ == nullptr) {
     return IMUStatus::Ok;  // nothing to recover on SPI
   }
   // TwoWire::pinSDA()/pinSCL() exist only on a few cores (ArduinoNRF, classic
   // ESP32 2.x). Use the portable default SDA/SCL pin macros that every target
-  // core defines; when a core exposes neither, fall back to a plain re-init
-  // instead of bit-banging unknown lines.
+  // core defines.
 #if !(defined(SDA) && defined(SCL))
-  imuWireEnd(wire_);
-  wire_->begin();
-  wire_->setClock(clockHz_);
+  // Without knowing the lines we cannot tell a stuck bus from a healthy one,
+  // and a blind end() + begin() is more likely to break a working bus than to
+  // rescue a jammed one. Leave it alone.
   return IMUStatus::Ok;
 #else
   const uint8_t sda = static_cast<uint8_t>(SDA);
   const uint8_t scl = static_cast<uint8_t>(SCL);
 
-  // Release the peripheral's hold on the lines so we can bit-bang them.
+  // Reading the pads works while the peripheral owns the pins on every core
+  // this library targets, so this costs nothing and risks nothing.
+  if (digitalRead(sda) == HIGH && digitalRead(scl) == HIGH) {
+    return IMUStatus::Ok;  // idle and healthy - do not touch it
+  }
+
+  // Genuinely stuck: a device is holding SDA low and nobody can start a
+  // transfer. Now the teardown is worth its cost. Note that the bus comes back
+  // on the default pins - unavoidable, since begin() is the only way back.
   imuWireEnd(wire_);
   pinMode(scl, OUTPUT);
   pinMode(sda, INPUT_PULLUP);
