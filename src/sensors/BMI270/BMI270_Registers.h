@@ -39,6 +39,16 @@ constexpr uint8_t CMD_SOFT_RESET = 0xB6;
 constexpr uint8_t STATUS_DRDY_GYR = 0x40;
 constexpr uint8_t STATUS_DRDY_ACC = 0x80;
 constexpr uint8_t PWR_GYR_EN = 0x02;
+
+// ERR_REG bit 0 is fatal_err: the part is not operable and only a power-on
+// reset clears it. EVENT bit 0 is por_detected, set by a power-on reset and
+// cleared when the register is read - which makes it the one way to find out,
+// after the event, that the supply dipped rather than something logical
+// having gone wrong.
+constexpr uint8_t ERR_REG = 0x02;
+constexpr uint8_t ERR_FATAL = 0x01;
+constexpr uint8_t EVENT = 0x1B;
+constexpr uint8_t EVENT_POR_DETECTED = 0x01;
 constexpr uint8_t PWR_ACC_EN = 0x04;
 constexpr uint8_t INTERNAL_STATUS_INIT_OK = 0x01;
 

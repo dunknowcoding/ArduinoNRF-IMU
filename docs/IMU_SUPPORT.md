@@ -650,6 +650,28 @@ interchangeable, and only one will be right for your part:
 Start with `bmi270.c`. If the chip answers `init_err` the image reached it and
 was rejected, so try another. If it answers `not_init`, see below.
 
+### A part stuck at `not_init`
+
+`not_init` means the core never ran, and there are two quite different reasons
+for that. `poweredDownDuringInit()` tells them apart, and `begin()` checks it
+for you - `lastStageText()` will say which one you have.
+
+The BMI270 records a power-on reset in `EVENT` bit 0, `por_detected`. If that
+bit is set during initialisation, the part restarted itself at the moment its
+core was enabled. That is a supply fault on the module and no image will fix
+it: fit decoupling right at the module's VDD and GND pins, and feed it a solid
+3.3 V on short leads.
+
+This is worth checking before suspecting the image or the driver. On a module
+that behaved this way, everything else looked perfect - `CHIP_ID` a stable
+`0x24`, soft reset working, every configuration register holding its value,
+the 8192-byte upload completing with zero failed transactions, and `PWR_CTRL`
+correctly refusing sensor-enable bits before `init_ok`. The give-away was that
+writing `INIT_CTRL = 0x01` reset the die **even with no image loaded at all**,
+so nothing was executing and nothing could be blamed on Bosch's firmware.
+`por_detected` was clear immediately before the trigger and set five
+milliseconds after it.
+
 ### Supplying it
 
 ```cpp
@@ -784,10 +806,30 @@ passed, across inter-run gaps of 100, 300 and 900 ms.
 
 Use `setDebugStream(&Serial)` to watch the sequence if you need to.
 
+### Reading the part's own error reports
+
+The BNO085 reports its SHTP transport errors on the command channel, as a list
+that grows by one byte per error. `shtpErrorCount()` and `lastShtpError()`
+expose them.
+
+Two errors during boot is normal on this part and does not stop anything
+working - it is what a healthy bring-up looks like. A count that keeps
+climbing while the sensor is running is not normal, and points at the
+transport rather than at your use of the API.
+
 ### Bus speed
 
-100 kHz and 400 kHz both work; 400 kHz is the better default. At 50 kHz about
-one bring-up in six comes up mute - the part answers and then never reports -
-so do not run this sensor below 100 kHz. `setBusClockHz()` lets the driver set
-the rate; left alone it will not touch a clock you configured yourself, which
-matters on a bus shared with a slower device.
+50 kHz, 100 kHz and 400 kHz all pass 20 bring-ups out of 20; 400 kHz is the
+better default because it is quickest, not because the others are shaky.
+
+An earlier version of this page said not to run the part below 100 kHz. That
+was wrong, and worth explaining because the mistake is an easy one to repeat.
+50 kHz really did fail about one bring-up in six - but not because the bus was
+too slow for the sensor. The opening write is refused more often at 50 kHz,
+each refusal costs an attempt, and the retry budget was counted in attempts
+rather than in time. Two cheap failures used up the allowance that the one
+expensive failure needed. The bus speed was a symptom; the budget was the bug.
+
+`setBusClockHz()` lets the driver set the rate; left alone it will not touch a
+clock you configured yourself, which matters on a bus shared with a slower
+device.

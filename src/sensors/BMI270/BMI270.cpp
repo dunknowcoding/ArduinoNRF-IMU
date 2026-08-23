@@ -76,10 +76,18 @@ const char* BMI270::lastStageText() const {
     case Stage::ConfigUpload:    return "the configuration blob would not transfer";
     case Stage::ConfigNotLoaded:
       switch (lastInternalStatus_ & 0x0Fu) {
-        case 0x00: return "image sent, chip still reports not_init - its internal "
-                          "core is not running. A working BMI270 answers a bad "
-                          "image with init_err, so a part that never leaves "
-                          "not_init is most likely a clone or faulty";
+        case 0x00:
+          if (porDuringInit_) {
+            return "the part power-on-reset itself when its core started - "
+                   "por_detected was set and the configuration registers "
+                   "reverted. This is a supply fault on the module, not the "
+                   "image: fit decoupling at its VDD/GND pins and give it a "
+                   "solid 3.3 V on short leads";
+          }
+          return "image sent, chip still reports not_init - its internal core "
+                 "is not running. A working BMI270 answers a bad image with "
+                 "init_err, so a part that never leaves not_init has not "
+                 "started at all";
         case 0x02: return "the chip reports init_err - it received an image but "
                           "rejected it";
         case 0x03: return "the chip reports drv_err";
@@ -106,7 +114,19 @@ uint8_t BMI270::whoAmI() {
 }
 
 bool BMI270::isConnected() {
-  return whoAmI() == kChipId;
+  // Ask more than once before declaring the part absent.
+  //
+  // A single identity read is not a reliable test. Sampled 30 times on a
+  // quiet, freshly reset BMI270, CHIP_ID came back correct 29 times and the
+  // read failed outright once - and the first transaction after an idle bus
+  // is the likeliest one to go, which is exactly where this call sits. One
+  // unlucky read was enough to report a healthy sensor as "not a BMI270",
+  // which sends you looking at the wiring for a fault that is not there.
+  for (uint8_t attempt = 0; attempt < 4; ++attempt) {
+    if (whoAmI() == kChipId) return true;
+    delay(2);
+  }
+  return false;
 }
 
 bool BMI270::reset() {
@@ -198,6 +218,7 @@ bool BMI270::configurationLoaded() {
   //
   // Poll rather than read once: the chip finishes its self-configuration in
   // its own time after INIT_CTRL is set.
+  porDuringInit_ = false;
   const uint32_t deadline = millis() + 400;
   for (;;) {
     uint8_t status = 0;
@@ -205,6 +226,20 @@ bool BMI270::configurationLoaded() {
       lastInternalStatus_ = status;
       if ((status & 0x0Fu) == 0x01u) return true;   // init_ok
     }
+
+    // Ask the part why it is not answering, rather than only that it is not.
+    //
+    // A BMI270 whose core browns out as it starts looks identical from
+    // INTERNAL_STATUS to one that simply never got its image: both sit at
+    // not_init for ever. EVENT tells them apart, and it is the difference
+    // between "try a different image" and "fix the power". por_detected
+    // clears on read, so catch it here rather than after the loop.
+    uint8_t event = 0;
+    if (bus_.readRegister(EVENT, event) == IMUStatus::Ok &&
+        (event & EVENT_POR_DETECTED) != 0) {
+      porDuringInit_ = true;
+    }
+
     if (millis() >= deadline) return false;
     delay(5);
   }

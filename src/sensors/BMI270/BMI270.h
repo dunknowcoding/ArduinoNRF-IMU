@@ -52,6 +52,16 @@ class BMI270 : public IMUSensor {
   // received an image and rejected it, which is a different problem entirely.
   uint8_t internalStatus() const { return lastInternalStatus_; }
 
+  // True when the part power-on-reset itself while its core was being
+  // started. Sampled during begin() when the configuration fails to take.
+  //
+  // This is the difference between a part that rejected the image and a part
+  // that cannot run at all: the image is irrelevant if the die restarts the
+  // moment INIT_CTRL is written. Measured on a faulty module, por_detected
+  // was clear immediately before the trigger and set five milliseconds after
+  // it, with no image loaded, so nothing was executing.
+  bool poweredDownDuringInit() const { return porDuringInit_; }
+
   // The BMI270's step counter, gesture and motion detectors all run on its
   // internal core, so none of them exist until a configuration image has been
   // loaded - see setConfigImage(). There is no API for them here because there
@@ -85,6 +95,7 @@ class BMI270 : public IMUSensor {
 
  private:
   Stage lastStage_ = Stage::None;
+  bool porDuringInit_ = false;
   uint8_t lastInternalStatus_ = 0xFF;
   const uint8_t* configImage_ = nullptr;
   size_t configImageLength_ = 0;

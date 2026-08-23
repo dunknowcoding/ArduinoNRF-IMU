@@ -144,6 +144,19 @@ class BNO08x : public IMUSensor {
   // that address, 3 = there but rejected the data, 4 = bus fault, 5 = timeout.
   uint8_t lastWireError() const { return lastWireError_; }
 
+  // --- SHTP transport errors ------------------------------------------------
+  //
+  // The BNO085 reports its own protocol errors on the command channel, as a
+  // list that grows by one byte per error. They were being read and thrown
+  // away, which is a shame: when the part is misbehaving it is often saying
+  // why. A handful during boot is normal and harmless - the count climbing
+  // while the sensor is running is not.
+
+  // Total SHTP errors the part has reported since begin().
+  uint16_t shtpErrorCount() const { return shtpErrorCount_; }
+  // The most recent error byte, or zero if there has not been one.
+  uint8_t lastShtpError() const { return lastShtpError_; }
+
   // The SH-2 report id of the last sensor report received, whether or not this
   // driver knows how to decode it. Zero until one arrives. Useful for finding
   // out which features a particular part actually delivers.
@@ -252,6 +265,11 @@ class BNO08x : public IMUSensor {
   // Set when a control-channel packet arrives. A BNO085 announces a finished
   // boot on three channels, and this is the last of them - see softReset().
   bool controlSeen_ = false;
+  // Set the moment anything at this address answers - a write accepted or a
+  // read that returned data. Distinguishes "difficult" from "not fitted".
+  bool sawResponse_ = false;
+  uint16_t shtpErrorCount_ = 0;
+  uint8_t lastShtpError_ = 0;
   uint32_t reportIntervalUs_ = 50000;
 
   ProductInfo product_;

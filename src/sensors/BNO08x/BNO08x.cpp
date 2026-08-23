@@ -65,14 +65,28 @@ bool BNO08x::beginI2C(TwoWire& wire, uint8_t address) {
   // succeeds. The alternation was never two different outcomes - it was one
   // outcome that needed two passes.
   //
-  // Three attempts, because a failing one costs about 35 ms while giving up
-  // on a healthy sensor costs the whole application. A genuinely absent chip
-  // still reports absent, just 70 ms later.
-  for (uint8_t attempt = 0; attempt < 3; ++attempt) {
-    if (attempt != 0) {
+  // Budget the retries by time rather than by count.
+  //
+  // The two ways an attempt can fail cost wildly different amounts. One that
+  // never reaches the sensor - the opening write refused with code 4 - is
+  // over in about 35 ms. One that reaches it and then loses the boot race
+  // costs the best part of a second. Counting them the same way was a trap:
+  // at 50 kHz, where the opening write is refused more often, two cheap
+  // refusals could exhaust a three-attempt budget and leave nothing in hand
+  // for the expensive failure that actually needed a retry. That is the whole
+  // of the "50 kHz comes up mute" behaviour - not a slow bus, just a budget
+  // spent on the wrong thing.
+  // 2500 ms was not quite enough: one run in twenty at 50 kHz used 2633 ms
+  // and was cut off still trying. The budget only matters when something is
+  // wrong, and the absent-sensor path below no longer waits it out, so there
+  // is nothing left for a longer one to cost.
+  const uint32_t deadline = millis() + 3500;
+  sawResponse_ = false;
+  for (uint8_t attempt = 1; attempt <= 10; ++attempt) {
+    if (attempt != 1) {
       if (debug_ != nullptr) {
         debug_->print(F("  [b] attempt "));
-        debug_->print(attempt + 1);
+        debug_->print(attempt);
         debug_->println(F(" - the last one reset the part, so it should be ready"));
       }
       // Let the reset the previous attempt provoked finish, then spend one
@@ -81,7 +95,29 @@ bool BNO08x::beginI2C(TwoWire& wire, uint8_t address) {
       nudgeBus();
       delay(5);
     }
-    if (attemptBringUp(attempt == 2)) return true;
+
+    const bool finalTry = (attempt == 10) || (millis() >= deadline);
+    if (attemptBringUp(finalTry)) return true;
+
+    // Stop early when nothing has answered at all.
+    //
+    // A generous budget is for a sensor that is present and being awkward,
+    // not for an empty address. Telling those apart by the Wire code alone
+    // does not travel: AVR and SAMD return 2 for an unacknowledged address,
+    // but the ESP32 core returns 4 for an absent address just as it does for
+    // a real bus fault, so a code-2 test is simply inert there.
+    //
+    // What does travel is whether anything has ever answered. sawResponse_ is
+    // set by the first accepted write or the first read that returned data,
+    // so three silent attempts means nothing is fitted here - and begin() has
+    // a second address to spend the time on.
+    if (!sawResponse_ && attempt >= 3) {
+      if (debug_ != nullptr) {
+        debug_->println(F("  [b] nothing has answered at this address - not retrying"));
+      }
+      return false;
+    }
+    if (finalTry) break;
   }
   return false;
 }
@@ -89,6 +125,8 @@ bool BNO08x::beginI2C(TwoWire& wire, uint8_t address) {
 bool BNO08x::attemptBringUp(bool lastChance) {
   productValid_ = false;
   resetSeen_ = false;
+  shtpErrorCount_ = 0;
+  lastShtpError_ = 0;
   lastError_ = Error::None;
   for (uint8_t& sequence : txSequence_) sequence = 0;
 
@@ -423,6 +461,7 @@ bool BNO08x::sendPacket(uint8_t channel, const uint8_t* payload,
     lastWireError_ = wire_->endTransmission();
     if (lastWireError_ == 0) {
       txSequence_[channel] = static_cast<uint8_t>(sequence + 1);
+      sawResponse_ = true;
       return true;
     }
   }
@@ -531,6 +570,7 @@ bool BNO08x::receivePacket() {
   if (wire_->requestFrom(address_, static_cast<uint8_t>(4), true) != 4) {
     return false;   // queue empty; too common to be worth tracing
   }
+  sawResponse_ = true;
   for (uint8_t i = 0; i < 4; ++i) header_[i] = static_cast<uint8_t>(wire_->read());
   uint16_t packetLength = (static_cast<uint16_t>(header_[1]) << 8) | header_[0];
   packetLength &= 0x7FFF;
@@ -547,6 +587,22 @@ bool BNO08x::receivePacket() {
     resetSeen_ = true;
   }
   if (header_[2] == CHANNEL_CONTROL) controlSeen_ = true;
+
+  // The command channel carries SHTP's own error list: report id 0x01
+  // followed by one byte per error. The packets grow as errors accumulate,
+  // which is why a boot shows lengths of 6, then 7, then 8. Reading them and
+  // dropping them on the floor threw away the one place the part explains
+  // itself, so keep the count and the most recent code.
+  if (header_[2] == CHANNEL_COMMAND && payloadLength_ >= 2 && payload_[0] == 0x01) {
+    shtpErrorCount_ = static_cast<uint16_t>(payloadLength_ - 1);
+    lastShtpError_ = payload_[payloadLength_ - 1];
+    if (debug_ != nullptr) {
+      debug_->print(F("    shtp errors now "));
+      debug_->print(shtpErrorCount_);
+      debug_->print(F(", latest 0x"));
+      debug_->println(lastShtpError_, HEX);
+    }
+  }
   // A BNO085 emits advertisement, reset-complete and product ID unprompted
   // after every reset. Capturing the product ID here rather than only inside
   // requestProductId() means a drain loop can no longer discard it.
