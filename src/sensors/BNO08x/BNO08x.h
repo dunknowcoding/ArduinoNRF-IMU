@@ -124,7 +124,11 @@ class BNO08x : public IMUSensor {
     ResetFailed,
     NoResponse,
     NoProductId,
-    ReportEnableFailed
+    ReportEnableFailed,
+    // Everything was accepted and the chip still delivers nothing. Separate
+    // from ReportEnableFailed because the writes were not refused - the Set
+    // Feature commands went out cleanly and were simply not acted on.
+    NoReports
   };
   // Optional bring-up trace. SHTP failures are almost never visible from the
   // outside - the chip is on the bus, it acknowledges, and then nothing works
@@ -205,6 +209,20 @@ class BNO08x : public IMUSensor {
  private:
   static constexpr size_t kPacketCapacity = 128;
 
+  // One complete bring-up: reset, product ID, enable the default reports.
+  // beginI2C() calls this more than once if it has to - see the note there.
+  // lastChance relaxes the "the boot did not finish" check, so a part that
+  // never announces on the control channel can still be brought up rather
+  // than being refused outright. See attemptBringUp().
+  bool attemptBringUp(bool lastChance);
+  // Turns on the four reports begin() promises, and makes sure they are
+  // actually arriving rather than merely accepted.
+  bool enableDefaultReports();
+  // Reads until a sensor report shows up, or the budget runs out.
+  bool waitForReports(uint16_t budgetMs);
+  // An address-only transaction, discarded. Cheap, and it puts the controller
+  // back in step after an idle period - see beginI2C().
+  void nudgeBus();
   bool softReset();
   bool requestProductId(uint16_t timeoutMs = 500);
   bool captureProductId();
@@ -231,6 +249,9 @@ class BNO08x : public IMUSensor {
   uint16_t payloadLength_ = 0;
   bool productValid_ = false;
   bool resetSeen_ = false;
+  // Set when a control-channel packet arrives. A BNO085 announces a finished
+  // boot on three channels, and this is the last of them - see softReset().
+  bool controlSeen_ = false;
   uint32_t reportIntervalUs_ = 50000;
 
   ProductInfo product_;

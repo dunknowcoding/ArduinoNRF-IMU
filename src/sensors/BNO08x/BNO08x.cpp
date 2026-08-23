@@ -30,13 +30,15 @@ bool BNO08x::begin() {
   return beginI2C(Wire, kAddrAlternate);
 }
 
+void BNO08x::nudgeBus() {
+  if (wire_ == nullptr) return;
+  wire_->beginTransmission(address_);
+  (void)wire_->endTransmission();
+}
+
 bool BNO08x::beginI2C(TwoWire& wire, uint8_t address) {
   wire_ = &wire;
   address_ = address;
-  productValid_ = false;
-  resetSeen_ = false;
-  lastError_ = Error::None;
-  for (uint8_t& sequence : txSequence_) sequence = 0;
 
   // begin() is safe to repeat - every core treats a second call on a live bus
   // as a no-op - but it takes no pins, so it can only ever open the DEFAULT
@@ -47,6 +49,48 @@ bool BNO08x::beginI2C(TwoWire& wire, uint8_t address) {
   // marginal bus. Use setBusClockHz() if you want this driver to set it.
   wire_->begin();
   if (busClockHz_ != 0) wire_->setClock(busClockHz_);
+
+  // Try the whole bring-up more than once before giving up.
+  //
+  // Measured on an ESP32 with a BNO085 that a scanner finds on every pass:
+  // bring-ups alternated pass, fail, pass, fail for twenty runs in a row. The
+  // failing ones were refused at their very first write with Wire code 4, and
+  // an identical write issued by hand at that same moment was refused too, so
+  // it is genuine bus state rather than a mistake in how this driver calls
+  // Wire.
+  //
+  // The useful part is what the trace showed next: a failing attempt resets
+  // the sensor anyway. The write reaches the part, the controller reports an
+  // error, and the following attempt finds fresh boot traffic waiting and
+  // succeeds. The alternation was never two different outcomes - it was one
+  // outcome that needed two passes.
+  //
+  // Three attempts, because a failing one costs about 35 ms while giving up
+  // on a healthy sensor costs the whole application. A genuinely absent chip
+  // still reports absent, just 70 ms later.
+  for (uint8_t attempt = 0; attempt < 3; ++attempt) {
+    if (attempt != 0) {
+      if (debug_ != nullptr) {
+        debug_->print(F("  [b] attempt "));
+        debug_->print(attempt + 1);
+        debug_->println(F(" - the last one reset the part, so it should be ready"));
+      }
+      // Let the reset the previous attempt provoked finish, then spend one
+      // discarded transaction putting the controller back in step.
+      delay(120);
+      nudgeBus();
+      delay(5);
+    }
+    if (attemptBringUp(attempt == 2)) return true;
+  }
+  return false;
+}
+
+bool BNO08x::attemptBringUp(bool lastChance) {
+  productValid_ = false;
+  resetSeen_ = false;
+  lastError_ = Error::None;
+  for (uint8_t& sequence : txSequence_) sequence = 0;
 
   // Let the controller settle, then spend one throwaway transaction on it.
   //
@@ -59,8 +103,7 @@ bool BNO08x::beginI2C(TwoWire& wire, uint8_t address) {
   // The driver cannot rely on the caller having warmed the bus, so it warms
   // it here. An address probe costs microseconds and is discarded.
   delay(10);
-  wire_->beginTransmission(address_);
-  (void)wire_->endTransmission();
+  nudgeBus();
   delay(5);
 
   if (resetPin_ >= 0 && !hardwareReset()) {
@@ -68,20 +111,25 @@ bool BNO08x::beginI2C(TwoWire& wire, uint8_t address) {
     return false;
   }
 
-  // Clear whatever is already queued before resetting.
+  // Reset first and drain afterwards, never the other way round.
   //
-  // If the MCU has rebooted while the sensor kept running - which is every
-  // upload during development, and every watchdog reset in the field - the
-  // chip is part way through a packet nobody is reading. Reading a header at
-  // that offset yields a nonsense length (26856 bytes, in one measured case),
-  // and every read after it stays out of step. Resetting into that state does
-  // not help, because the reply arrives on the same desynchronised stream.
+  // This used to drain before resetting, to clear a stream left half-read by
+  // an MCU reboot - a real problem, which shows up as a header with a
+  // nonsense length in it (26856 bytes, in one measured case). But draining
+  // here cost more than it saved: against a chip that had been streaming, the
+  // reads that come back empty leave the next write refused with code 4, and
+  // no probe or delay rescues it. That is the whole reason the first attempt
+  // of every single bring-up was failing.
   //
-  // Reads are cheap and a NACK just means the queue is empty, so drain until
-  // it goes quiet and start from a known position.
-  drainQueue(120);
-  if (debug_ != nullptr) debug_->println(F("  [b] pre-reset drain done"));
-
+  // The measurements are unambiguous. A write to a streaming chip with a
+  // probe immediately before it was accepted 4 times out of 4; the same write
+  // with reads in between was refused every time; and settling for up to
+  // 200 ms in place of the probe did not help once in twenty.
+  //
+  // Resetting first loses nothing, because the reset is what resynchronises
+  // the stream in the first place - the part reboots and starts a fresh one,
+  // announcing itself on channels 0, 1 and 2. A desynchronised read pointer
+  // cannot spoil a write, which begins with its own START.
   if (!softReset()) {
     // softReset() only fails when the very first write is not acknowledged,
     // so at this point the chip is absent, at another address, or not in I2C
@@ -89,6 +137,26 @@ bool BNO08x::beginI2C(TwoWire& wire, uint8_t address) {
     lastError_ = Error::NoResponse;
     return false;
   }
+  // If the boot did not finish, stop here and let the caller try again.
+  //
+  // Traced over eight bring-ups, this one line predicts the outcome every
+  // time: each attempt that saw the control channel come up went on to work,
+  // and the one that did not had both rounds of Set Feature ignored and then
+  // failed. Pressing on from here is not merely futile, it is expensive - it
+  // spends 600 ms proving the chip is not listening, and by the time the next
+  // attempt starts the sensor has moved on again.
+  //
+  // The last attempt carries on regardless. Not every part in this family is
+  // guaranteed to announce on channel 2, and refusing to open a sensor that
+  // would otherwise have worked is worse than the wasted time.
+  if (!controlSeen_ && !lastChance) {
+    if (debug_ != nullptr) {
+      debug_->println(F("  [b] boot incomplete - abandoning this attempt"));
+    }
+    lastError_ = Error::NoResponse;
+    return false;
+  }
+
   if (!requestProductId()) {
     // It acknowledged the write but never returned a product ID, so something
     // is on the bus and talking, just not SHTP.
@@ -99,13 +167,59 @@ bool BNO08x::beginI2C(TwoWire& wire, uint8_t address) {
   // sending configuration.
   delay(20);
 
-  bool ok = true;
-  ok &= enableReport(SENSOR_ACCELEROMETER, reportIntervalUs_);
-  ok &= enableReport(SENSOR_GYROSCOPE, reportIntervalUs_);
-  ok &= enableReport(SENSOR_MAGNETIC_FIELD, reportIntervalUs_);
-  ok &= enableReport(SENSOR_ROTATION_VECTOR, reportIntervalUs_);
-  if (!ok) lastError_ = Error::ReportEnableFailed;
-  return ok;
+  return enableDefaultReports();
+}
+
+bool BNO08x::enableDefaultReports() {
+  // Enable, then prove it took.
+  //
+  // A Set Feature command is acknowledged on the wire long before the chip
+  // has scheduled anything, so "the write succeeded" says nothing about
+  // whether reports will arrive. Two runs in twenty came up with every write
+  // accepted, a valid product ID, and then complete silence - no Get Feature
+  // response, no sensor reports, nothing. From the caller's side that is
+  // indistinguishable from a broken sensor, and it is the worst way for a
+  // bring-up to fail because it fails later, somewhere else.
+  //
+  // So the enables are followed by a wait for real traffic, and if none comes
+  // they are sent again. Once is enough - a part that ignores two rounds of
+  // Set Feature has something else wrong with it, and saying so is more use
+  // than trying for ever.
+  for (uint8_t round = 0; round < 2; ++round) {
+    bool ok = true;
+    ok &= enableReport(SENSOR_ACCELEROMETER, reportIntervalUs_);
+    ok &= enableReport(SENSOR_GYROSCOPE, reportIntervalUs_);
+    ok &= enableReport(SENSOR_MAGNETIC_FIELD, reportIntervalUs_);
+    ok &= enableReport(SENSOR_ROTATION_VECTOR, reportIntervalUs_);
+    if (!ok) {
+      lastError_ = Error::ReportEnableFailed;
+      return false;
+    }
+    // 300 ms is not a guess and not a budget to be widened. Doubling it was
+    // tried: at 100 kHz and above both settings pass every run, and at 50 kHz
+    // both fail about one run in six, so the failures there are not reports
+    // arriving late. The wait returns the instant the first report lands, so
+    // the number only matters when something is actually wrong - and a longer
+    // one just makes a genuinely mute part take longer to say so.
+    if (waitForReports(300)) return true;
+    if (debug_ != nullptr) {
+      debug_->println(F("  [b] enabled but silent - sending Set Feature again"));
+    }
+  }
+  lastError_ = Error::NoReports;
+  return false;
+}
+
+bool BNO08x::waitForReports(uint16_t budgetMs) {
+  const uint32_t deadline = millis() + budgetMs;
+  while (millis() < deadline) {
+    // Any packet on the report channel will do. The Get Feature response the
+    // chip sends back on the control channel is a promise; a report is the
+    // thing itself.
+    if (receivePacket() && header_[2] == CHANNEL_REPORTS) return true;
+    delay(2);
+  }
+  return false;
 }
 
 const char* BNO08x::lastErrorText() const {
@@ -125,6 +239,9 @@ const char* BNO08x::lastErrorText() const {
     case Error::NoProductId:        return "acknowledged but sent no product ID - "
                                            "on the bus but not speaking SHTP";
     case Error::ReportEnableFailed: return "opened, but a sensor report would not enable";
+    case Error::NoReports:          return "opened and configured, but no report ever "
+                                           "arrived - answering on the bus, yet not "
+                                           "measuring";
   }
   return "unknown";
 }
@@ -198,6 +315,7 @@ bool BNO08x::softReset() {
   // power-on boot as well, and mistaking that one for ours would mean
   // carrying on before this reset had even started.
   resetSeen_ = false;
+  controlSeen_ = false;
   if (!sendPacket(CHANNEL_EXECUTABLE, &reset, 1)) return false;
   delay(100);
 
@@ -222,6 +340,33 @@ bool BNO08x::softReset() {
                                : F("  [b] no reset-complete - carrying on"));
   }
 
+  // Then wait for the control channel, because the reset-complete report is
+  // not the end of the boot.
+  //
+  // A BNO085 announces itself on three channels after a reset: the SHTP
+  // advertisement on channel 0, the reset-complete on channel 1, and an
+  // unsolicited response on channel 2. Only the first two were being waited
+  // for, and the third routinely arrives a little later.
+  //
+  // Carrying on without it looked harmless and was not. Traced over a full
+  // period, every bring-up whose post-reset drain caught all three packets
+  // went on to work, and every one that saw only channels 0 and 1 had its
+  // Set Feature commands ignored - no Get Feature response, no reports, twice
+  // in a row - and then failed. The part was still finishing its boot and was
+  // not yet accepting configuration.
+  //
+  // That is the whole of the "every fifth bring-up fails" pattern: a race
+  // that the sensor won four times out of five. Waiting for channel 2 costs
+  // nothing when it has already arrived, which is the common case.
+  const uint32_t controlDeadline = millis() + 600;
+  while (millis() < controlDeadline && !controlSeen_) {
+    if (!receivePacket()) delay(2);
+  }
+  if (debug_ != nullptr) {
+    debug_->println(controlSeen_ ? F("  [b] control channel up - boot finished")
+                                 : F("  [b] no control-channel packet - carrying on"));
+  }
+
   // Then take whatever else the reboot queued, so the caller starts on a
   // packet boundary rather than mid-stream.
   drainQueue(200);
@@ -234,33 +379,52 @@ bool BNO08x::sendPacket(uint8_t channel, const uint8_t* payload,
                         uint8_t length) {
   if (wire_ == nullptr || channel >= 6 || length > 28) return false;
   const uint16_t packetLength = static_cast<uint16_t>(length) + 4;
-  wire_->beginTransmission(address_);
-  wire_->write(static_cast<uint8_t>(packetLength));
-  wire_->write(static_cast<uint8_t>(packetLength >> 8));
-  wire_->write(channel);
-  wire_->write(txSequence_[channel]++);
-  if (length != 0) wire_->write(payload, length);
-  // Keep the raw code. "begin() failed" is not a diagnosis; 2 (nobody at that
-  // address) and 3 (there, but rejecting the data) send you to opposite ends
-  // of the bench, and 4 means the peripheral itself is unhappy.
-  lastWireError_ = wire_->endTransmission();
-  if (lastWireError_ == 0) return true;
+
+  // The sequence number is read here and only committed once the frame has
+  // actually gone out. It used to be incremented inside the write, which
+  // meant every refused attempt burned a number the device never saw: three
+  // retries advanced the channel's sequence by four for one delivered packet,
+  // and the gaps showed up on the device's side as lost frames.
+  const uint8_t sequence = txSequence_[channel];
 
   // A write issued straight after a run of NACKed reads is refused with code
   // 4 - the controller has not settled yet. That is exactly the position
   // requestProductId() is in, arriving immediately after a drain loop, and a
   // single refusal there failed the whole bring-up while the chip sat waiting
   // to answer. Rebuild the frame and try again rather than giving up on it.
-  for (uint8_t retry = 0; retry < 3; ++retry) {
-    delay(4);
+  //
+  // Every write is preceded by a discarded address-only transaction, with
+  // nothing at all in between.
+  //
+  // Against a chip that has been streaming and then left alone for a moment -
+  // which is the state every re-open starts from - a plain write is refused
+  // with code 4. Waiting does not help it: measured at 0, 50, 100, 150 and
+  // 200 ms of settling, the write was refused 20 times out of 20. Sending a
+  // bare probe first and then writing immediately was accepted 4 times out of
+  // 4, and putting so much as 50 ms between the probe and the write broke it
+  // again, 0 out of 15.
+  //
+  // So it is adjacency that matters, not time, and the probe has to be the
+  // transaction directly before the one that counts. It comes back NACKed
+  // every time and that is fine - it is not there to succeed, it is there to
+  // put the controller and the sensor back in step.
+  for (uint8_t attempt = 0; attempt < 4; ++attempt) {
+    if (attempt != 0) delay(4);
+    nudgeBus();
     wire_->beginTransmission(address_);
     wire_->write(static_cast<uint8_t>(packetLength));
     wire_->write(static_cast<uint8_t>(packetLength >> 8));
     wire_->write(channel);
-    wire_->write(txSequence_[channel]++);
+    wire_->write(sequence);
     if (length != 0) wire_->write(payload, length);
+    // Keep the raw code. "begin() failed" is not a diagnosis; 2 (nobody at
+    // that address) and 3 (there, but rejecting the data) send you to
+    // opposite ends of the bench, and 4 means the peripheral is unhappy.
     lastWireError_ = wire_->endTransmission();
-    if (lastWireError_ == 0) return true;
+    if (lastWireError_ == 0) {
+      txSequence_[channel] = static_cast<uint8_t>(sequence + 1);
+      return true;
+    }
   }
   if (debug_ != nullptr) {
     debug_->print(F("    tx ch"));
@@ -382,6 +546,7 @@ bool BNO08x::receivePacket() {
   if (header_[2] == CHANNEL_EXECUTABLE && payloadLength_ > 0 && payload_[0] == 1) {
     resetSeen_ = true;
   }
+  if (header_[2] == CHANNEL_CONTROL) controlSeen_ = true;
   // A BNO085 emits advertisement, reset-complete and product ID unprompted
   // after every reset. Capturing the product ID here rather than only inside
   // requestProductId() means a drain loop can no longer discard it.

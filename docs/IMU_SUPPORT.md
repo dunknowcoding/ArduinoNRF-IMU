@@ -749,3 +749,45 @@ proximity, heart rate — are not applicable at all.
 `saveCalibration()` run the chip's own routine, and `tareNow()` / `saveTare()`
 define the current orientation as zero. Persist a tare only once the mounting
 is final.
+
+### If `begin()` is unreliable
+
+`begin()` is expected to succeed on the first call. If it does not, these are
+the two failures worth telling apart, and `lastError()` names them:
+
+| `lastError()` | Meaning |
+| --- | --- |
+| `NoResponse` | Nothing acknowledged. Check the address (`0x4A` or `0x4B`), and that PS0 and PS1 are both LOW so the part is in I2C mode. `lastWireError()` gives the raw code. |
+| `NoReports` | The part answered, gave a product ID, accepted the configuration, and then delivered nothing. It is on the bus and healthy but not measuring. |
+
+Two things make this driver's bring-up reliable, and both are worth knowing
+if you are writing your own:
+
+**Do not read the sensor before resetting it.** Reading a BNO085 that has
+been streaming leaves the very next write refused, and nothing rescues it -
+not an address probe, not a delay of up to 200 ms. Measured on an ESP32, a
+write with a probe immediately before it was accepted 4 times out of 4, the
+same write with reads in between was refused every time, and settling in
+place of the probe failed 20 times out of 20. Reset first; the reset is what
+resynchronises the stream anyway.
+
+**Wait for the whole boot announcement.** After a reset the part announces
+itself on three channels - the SHTP advertisement, the reset-complete, and an
+unsolicited response on the control channel. The last of these arrives a
+little later than the other two, and configuring the part before it lands
+means every Set Feature command is silently ignored.
+
+Missing either of those gave a bring-up that worked most of the time and
+failed on a fixed cycle, which is far more annoying than one that never
+works. With both in place, 100 consecutive bring-ups at 100 kHz and 400 kHz
+passed, across inter-run gaps of 100, 300 and 900 ms.
+
+Use `setDebugStream(&Serial)` to watch the sequence if you need to.
+
+### Bus speed
+
+100 kHz and 400 kHz both work; 400 kHz is the better default. At 50 kHz about
+one bring-up in six comes up mute - the part answers and then never reports -
+so do not run this sensor below 100 kHz. `setBusClockHz()` lets the driver set
+the rate; left alone it will not touch a clock you configured yourself, which
+matters on a bus shared with a slower device.
