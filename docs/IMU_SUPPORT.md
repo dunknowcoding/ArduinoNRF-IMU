@@ -630,10 +630,10 @@ it is given** — hand it rubbish and it answers `init_err`. A part that stays a
 That is straightforward to confirm: reset the part, write `INIT_CTRL = 0x00`,
 send a couple of hundred bytes of nonsense, write `INIT_CTRL = 0x01`, and read
 `INTERNAL_STATUS`. If it says `init_err`, the core is alive and the problem is
-your image. If it says `not_init`, the core is not running — the die is a clone
-or is faulty — and no amount of driver work will change that. Boards sold as
-BMI270 that carry the register map without a working core do exist; they answer
-`CHIP_ID 0x24` and hold every configuration register perfectly.
+your image. If it says `not_init`, the core is not running.
+
+**That is almost always a power problem, not bad silicon.** Check the supply
+before you conclude anything else — see below.
 
 ### Which image
 
@@ -652,25 +652,44 @@ was rejected, so try another. If it answers `not_init`, see below.
 
 ### A part stuck at `not_init`
 
-`not_init` means the core never ran, and there are two quite different reasons
-for that. `poweredDownDuringInit()` tells them apart, and `begin()` checks it
-for you - `lastStageText()` will say which one you have.
+`not_init` means the core never ran. The overwhelmingly likely reason is that
+the die is not being supplied, and `begin()` now checks for that itself:
+`supplyNotConnected()` reports it and `lastStageText()` explains it.
 
-The BMI270 records a power-on reset in `EVENT` bit 0, `por_detected`. If that
-bit is set during initialisation, the part restarted itself at the moment its
-core was enabled. That is a supply fault on the module and no image will fix
-it: fit decoupling right at the module's VDD and GND pins, and feed it a solid
-3.3 V on short leads.
+**A BMI270 whose VDD is open still answers perfectly.** The pull-ups on SDA and
+SCL push charge in through the pins' clamp diodes, and that is enough to run
+the interface but not the die. Everything a driver normally checks passes:
+`CHIP_ID` reads a stable `0x24`, soft reset appears to work, writes are
+accepted, and reserved bits are masked exactly as the datasheet says — write
+`0xFC` to `PWR_CONF` and read back `0x04`, write `0xFD` to `ACC_RANGE` and read
+back `0x01`. The 8192-byte upload completes with zero failed transactions.
 
-This is worth checking before suspecting the image or the driver. On a module
-that behaved this way, everything else looked perfect - `CHIP_ID` a stable
-`0x24`, soft reset working, every configuration register holding its value,
-the 8192-byte upload completing with zero failed transactions, and `PWR_CTRL`
-correctly refusing sensor-enable bits before `init_ok`. The give-away was that
-writing `INIT_CTRL = 0x01` reset the die **even with no image loaded at all**,
-so nothing was executing and nothing could be blamed on Bosch's firmware.
-`por_detected` was clear immediately before the trigger and set five
-milliseconds after it.
+What gives it away is that nothing is *retained*. Let the bus go quiet and
+within about 25 ms the charge drains, the die browns out, and the entire
+register file — configuration RAM included — is back to reset defaults.
+`INTERNAL_STATUS` falls from `init_ok` to `not_init`, `PWR_CONF` returns to
+`0x03`, the temperature registers read the invalid `0x8000`, and every data
+register reads zero.
+
+So test retention, not identity:
+
+> Write a register a value that is not its default, let the bus sit **completely
+> idle** for at least 100 ms, then read it back. A powered part keeps it
+> indefinitely. An unpowered one loses it, or stops answering altogether.
+
+The bus really must be idle. Any transaction at all — even one addressed to a
+different device on the same bus — tops the part up and hides the fault
+completely. On the module this was diagnosed on, hammering an address nothing
+responded to kept it initialised and reading **1.012 g**.
+
+`por_detected` (`EVENT` bit 0) will also be set, and `poweredDownDuringInit()`
+reports it, but on its own it is not enough to convict: it is set by a soft
+reset as well, and it cannot separate "no supply at all" from "supply too weak
+to hold up the core". Treat `supplyNotConnected()` as the answer and
+`poweredDownDuringInit()` as the corroboration.
+
+If the supply checks out and the part still says `not_init`, only then consider
+a bad image or a counterfeit die.
 
 ### Supplying it
 

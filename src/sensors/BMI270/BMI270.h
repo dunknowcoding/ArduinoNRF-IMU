@@ -57,10 +57,32 @@ class BMI270 : public IMUSensor {
   //
   // This is the difference between a part that rejected the image and a part
   // that cannot run at all: the image is irrelevant if the die restarts the
-  // moment INIT_CTRL is written. Measured on a faulty module, por_detected
-  // was clear immediately before the trigger and set five milliseconds after
-  // it, with no image loaded, so nothing was executing.
+  // moment INIT_CTRL is written. It does not, on its own, say why - see
+  // supplyNotConnected(), which is the far more common reason.
   bool poweredDownDuringInit() const { return porDuringInit_; }
+
+  // True when the part cannot hold a register value across an idle bus, which
+  // means it is not being supplied at all.
+  //
+  // A BMI270 whose VDD is open still answers perfectly. The pull-ups on SDA
+  // and SCL pump charge in through the pins' clamp diodes, and that is enough
+  // to run the interface: WHO_AM_I reads 0x24, writes are accepted, reserved
+  // bits are masked exactly as the datasheet says. Every check a driver
+  // normally makes passes. But the charge drains away in the gaps between
+  // transactions, so within about 25 ms of the bus going quiet the die browns
+  // out and the whole register file - configuration RAM included - is gone.
+  //
+  // From INTERNAL_STATUS that is indistinguishable from a part that never got
+  // its image: both sit at not_init for ever. Measured on such a module, it
+  // also set por_detected, reported the invalid 0x8000 temperature, and failed
+  // identically with no image loaded - every symptom of dead silicon, from a
+  // part that turned out to be perfect. Kept awake by nothing more than bus
+  // traffic addressed to a different device, it read 1.012 g.
+  //
+  // So test the thing that actually distinguishes them: write a register, let
+  // the bus idle, and see whether the value is still there. A powered part
+  // keeps it; an unpowered one cannot.
+  bool supplyNotConnected() const { return supplyNotConnected_; }
 
   // The BMI270's step counter, gesture and motion detectors all run on its
   // internal core, so none of them exist until a configuration image has been
@@ -96,7 +118,12 @@ class BMI270 : public IMUSensor {
  private:
   Stage lastStage_ = Stage::None;
   bool porDuringInit_ = false;
+  bool supplyNotConnected_ = false;
   uint8_t lastInternalStatus_ = 0xFF;
+
+  // Writes a register, lets the bus go quiet, and reads it back. False when
+  // the value did not survive, which means the die is not being supplied.
+  bool holdsStateAcrossIdleBus();
   const uint8_t* configImage_ = nullptr;
   size_t configImageLength_ = 0;
   bool configureDefaults();

@@ -77,12 +77,19 @@ const char* BMI270::lastStageText() const {
     case Stage::ConfigNotLoaded:
       switch (lastInternalStatus_ & 0x0Fu) {
         case 0x00:
+          if (supplyNotConnected_) {
+            return "the part is not being supplied - it answered a moment "
+                   "earlier and could not keep a register value across an "
+                   "idle bus. The SDA/SCL pull-ups feed it through its pin "
+                   "diodes, which runs the interface but not the die. Check "
+                   "VDD and GND at the module; the sensor itself is probably "
+                   "fine";
+          }
           if (porDuringInit_) {
             return "the part power-on-reset itself when its core started - "
                    "por_detected was set and the configuration registers "
-                   "reverted. This is a supply fault on the module, not the "
-                   "image: fit decoupling at its VDD/GND pins and give it a "
-                   "solid 3.3 V on short leads";
+                   "reverted. Its supply cannot hold up the core: check VDD "
+                   "and GND at the module and fit decoupling at its pins";
           }
           return "image sent, chip still reports not_init - its internal core "
                  "is not running. A working BMI270 answers a bad image with "
@@ -219,6 +226,7 @@ bool BMI270::configurationLoaded() {
   // Poll rather than read once: the chip finishes its self-configuration in
   // its own time after INIT_CTRL is set.
   porDuringInit_ = false;
+  supplyNotConnected_ = false;
   const uint32_t deadline = millis() + 400;
   for (;;) {
     uint8_t status = 0;
@@ -240,9 +248,66 @@ bool BMI270::configurationLoaded() {
       porDuringInit_ = true;
     }
 
-    if (millis() >= deadline) return false;
+    if (millis() >= deadline) {
+      // Before blaming the image or the silicon, check the part is actually
+      // powered. This costs one write, one idle wait and two reads, and only
+      // ever runs on a bring-up that has already failed.
+      supplyNotConnected_ = !holdsStateAcrossIdleBus();
+      return false;
+    }
     delay(5);
   }
+}
+
+bool BMI270::holdsStateAcrossIdleBus() {
+  // Establish that it is talking right now, so that going quiet later means
+  // something. Without this the test cannot tell an unpowered part from one
+  // that was never on the bus at all, and it must not blame the supply for a
+  // sensor that simply is not fitted.
+  uint8_t identity = 0;
+  if (bus_.readRegister(CHIP_ID, identity) != IMUStatus::Ok ||
+      identity != kChipId) {
+    return true;   // not answering even now; a different fault entirely
+  }
+
+  // ACC_CONF is a full eight-bit register with no reserved bits, so the
+  // readback is an exact comparison rather than a masked one, and it is safe
+  // to disturb on a bring-up that has already failed.
+  const uint8_t probe = 0x57;          // not the 0xA8 reset default
+  if (bus_.writeRegister(ACC_CONF, probe) != IMUStatus::Ok) {
+    // It answered a moment ago and will not take a write now. That is the
+    // fault, not an excuse to ignore it - the original version of this check
+    // treated a refused transaction as "inconclusive" and so never fired on
+    // the very board it was written for.
+    return false;
+  }
+
+  uint8_t immediate = 0;
+  if (bus_.readRegister(ACC_CONF, immediate) != IMUStatus::Ok) return false;
+  if (immediate != probe) {
+    // Accepted the write but did not keep it even for a moment. Still a part
+    // that cannot hold state.
+    return false;
+  }
+
+  // The bus must be genuinely quiet here. Any transaction, even one addressed
+  // to another device, tops an unpowered part up through its clamp diodes and
+  // hides exactly what this is looking for.
+  //
+  // Measured on such a module the value survived 20 ms and was gone by 40, so
+  // waiting only 40 landed on the boundary and reported "held" about as often
+  // as not. This is deliberately far clear of it; a powered part holds a
+  // register indefinitely, so a long wait costs nothing but certainty.
+  delay(120);
+
+  uint8_t later = 0;
+  if (bus_.readRegister(ACC_CONF, later) != IMUStatus::Ok) {
+    return false;    // went silent across an idle gap
+  }
+  const bool held = (later == probe);
+
+  bus_.writeRegister(ACC_CONF, 0xA8);  // put the default back
+  return held;
 }
 
 bool BMI270::configureDefaults() {
