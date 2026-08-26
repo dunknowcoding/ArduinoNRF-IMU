@@ -152,10 +152,16 @@ bool BMI270::reset() {
   //
   // Polling costs nothing when the chip is quick and rescues the case where it
   // is not.
+  // Poll without sleeping.
+  //
+  // This used to delay(5) between attempts, which is a small idle gap each
+  // time round - and on a part that does not hold its state across an idle
+  // bus, those gaps are the very thing being recovered from. Reading flat out
+  // both polls and keeps the bus alive, and it costs nothing on a part that
+  // comes back immediately.
   const uint32_t deadline = millis() + 300;
   while (millis() < deadline) {
-    delay(5);
-    if (isConnected()) return true;
+    if (whoAmI() == kChipId) return true;
   }
   return false;
 }
@@ -335,7 +341,12 @@ bool BMI270::configureDefaults() {
   ok &= setSampleRateHz(sampleRateHz_);
   ok &= setLowPassFilterHz(50);
   ok &= wakeAndEnable(PWR_ACC_EN | PWR_GYR_EN | PWR_TEMP_EN);
-  delay(80);
+
+  // Wait for the first sample by polling, not by sleeping. delay(80) here was
+  // an eighty millisecond idle gap immediately after enabling the sensors,
+  // which is exactly long enough for a part that will not hold its state
+  // across an idle bus to lose everything that was just configured.
+  wakeAndAwaitData(wakeTimeoutMs_);
   return ok;
 }
 
@@ -351,29 +362,123 @@ bool BMI270::wakeAndEnable(uint8_t sensors) {
   return bus_.writeRegisters(PWR_CONF, pair, sizeof(pair)) == IMUStatus::Ok;
 }
 
-void BMI270::holdAwake(uint16_t ms) {
-  // Keep the part out of suspend by writing continuously, re-asserting both
-  // the power state and the sensor configuration - a part that has been asleep
-  // has lost the configuration too, so waking it without restoring the output
-  // data rate and ranges gives you a running sensor set to something else.
-  //
-  // The two bursts are adjacent-register writes so neither can be split by the
-  // part falling asleep half way through.
-  uint8_t conf[4];
-  conf[0] = accConf_;
-  conf[1] = accRange_;
-  conf[2] = gyrConf_;
-  conf[3] = gyrRange_;
-  for (uint32_t until = millis() + ms; millis() < until; ) {
-    wakeAndEnable(PWR_ACC_EN | PWR_GYR_EN | PWR_TEMP_EN);
-    bus_.writeRegisters(ACC_CONF, conf, sizeof(conf));
-  }
+void BMI270::trace(const char* what, uint8_t value) {
+  if (debug_ == nullptr) return;
+  debug_->print(F("  [bmi270] "));
+  debug_->print(what);
+  debug_->print(F(" 0x"));
+  debug_->println(value, HEX);
 }
 
-// A sample from a part that is not actually running: every data register
-// exactly zero, and the temperature at 0x8000, which is the BMI270's
-// documented "no reading" value. A running sensor never reports it, so the
-// pair together cannot be mistaken for a genuinely stationary board.
+bool BMI270::resumeAfterSleep() {
+  // Get it answering again before trying to do anything to it.
+  //
+  // A part that has gone to sleep does not merely return stale registers, it
+  // stops acknowledging altogether: the read that got us here came back as a
+  // bus error, and so did the soft-reset command that followed it. Every
+  // recovery step was failing on its first transaction.
+  //
+  // Reading flat out revives it - the traffic itself is what brings it back -
+  // so spend a moment doing that before anything that matters.
+  bool answering = false;
+  for (uint32_t end = millis() + 100; millis() < end; ) {
+    if (whoAmI() == kChipId) { answering = true; break; }
+  }
+  trace("resume: answering again", answering ? 1 : 0);
+  if (!answering) return false;
+
+  // How much has to be put back depends on how far the part fell.
+  //
+  // INTERNAL_STATUS is the test. If it still reads init_ok the core is running
+  // and only the sensor registers need re-asserting, which is quick. If it has
+  // dropped to not_init the configuration RAM itself is gone - the 8 KB image
+  // is not something PWR_CTRL can restore - and nothing short of the whole
+  // bring-up will bring it back.
+  uint8_t internal = 0;
+  const bool coreAlive =
+      bus_.readRegister(INTERNAL_STATUS, internal) == IMUStatus::Ok &&
+      (internal & 0x0Fu) == INTERNAL_STATUS_INIT_OK;
+  trace("resume: INTERNAL_STATUS", internal);
+
+  if (!coreAlive) {
+    // Soft reset first. Section 4.4 is explicit that writing
+    // INIT_CTRL.init_ctrl = 0x01 "must not be performed more than once after
+    // POR or soft reset", so a second upload without a reset in front of it
+    // is simply ignored - which is exactly what happened when this was tried
+    // the other way round.
+    //
+    // A full re-bring-up costs around 600 ms, which is far too slow to be
+    // doing per sample; but stale or absent data is worse, and a part that
+    // holds its configuration never comes down this path at all.
+    const bool didReset = reset();
+    trace("resume: soft reset ok", didReset ? 1 : 0);
+    if (!didReset) return false;
+    const bool uploaded = uploadConfiguration();
+    trace("resume: upload ok", uploaded ? 1 : 0);
+    if (!uploaded) return false;
+    // Deliberately not configureDefaults(). That routes through the public
+    // setters, which read-modify-write ACC_CONF and GYR_CONF - and a part that
+    // has only just been re-initialised can lose its registers between the
+    // read and the write, so the whole call reports failure and update()
+    // returns nothing even though the core came up perfectly. Write the cached
+    // configuration straight out instead, which is what recovering by hand
+    // does and what was measured working five times out of five.
+  }
+
+  // Both bursts are adjacent-register writes - ACC_CONF through GYR_RANGE at
+  // 0x40..0x43, then PWR_CONF and PWR_CTRL at 0x7C..0x7D - so neither can be
+  // split by the part falling asleep half way through.
+  //
+  // The cached values are used rather than reading the registers first,
+  // because reading a part that has lost its configuration just returns the
+  // reset defaults and would configure it to those.
+  const uint8_t conf[4] = {accConf_, accRange_, gyrConf_, gyrRange_};
+  trace("resume: writing ACC_CONF", accConf_);
+  bus_.writeRegisters(ACC_CONF, conf, sizeof(conf));
+  wakeAndEnable(PWR_ACC_EN | PWR_GYR_EN | PWR_TEMP_EN);
+  // Deliberately no tracing between here and the caller's read.
+  //
+  // There was, and it cost an hour: five debug reads with a Serial.println
+  // after each is tens of milliseconds of idle bus, so the part went back to
+  // sleep between a successful recovery and the sample it was recovered for.
+  // The trace reported everything healthy - PWR_CTRL 0x0E, drdy set - and the
+  // sample that followed read zero.
+  return wakeAndAwaitData(wakeTimeoutMs_);
+}
+
+bool BMI270::wakeAndAwaitData(uint16_t timeoutMs) {
+  // Enable once, then keep the part awake without touching the enables again.
+  //
+  // Rewriting PWR_CTRL on every poll restarts the accelerometer's start-up
+  // each time round, so drdy never gets the ~46 ms it needs to appear and the
+  // loop times out with the sensor perpetually one step from ready. Only
+  // PWR_CONF gets refreshed below, which holds off advanced power save without
+  // disturbing the sensors.
+  //
+  // The refresh is necessary at all because an idle bus is what puts this part
+  // to sleep in the first place - waiting with delay() would undo the wake-up
+  // it is waiting on.
+  const uint8_t pair[2] = {0x00, PWR_ACC_EN | PWR_GYR_EN | PWR_TEMP_EN};
+  if (bus_.writeRegisters(PWR_CONF, pair, sizeof(pair)) != IMUStatus::Ok) {
+    return false;
+  }
+
+  for (uint32_t end = millis() + timeoutMs; millis() < end; ) {
+    uint8_t status = 0;
+    // Wait for both sensors, not just the accelerometer. The gyroscope takes
+    // noticeably longer to start, so returning on drdy_acc alone handed back
+    // samples with the gyro reading exactly 0.00 on every axis - which looks
+    // like a perfectly still board rather than one that has not woken up yet.
+    const uint8_t both = STATUS_DRDY_ACC | STATUS_DRDY_GYR;
+    if (bus_.readRegister(STATUS, status) == IMUStatus::Ok &&
+        (status & both) == both) {
+      return true;
+    }
+    bus_.writeRegister(PWR_CONF, 0x00);   // keep-alive, enables untouched
+  }
+  return false;
+}
+
 bool BMI270::sampleIsDead(const uint8_t* a, const uint8_t* g,
                           const uint8_t* t) {
   if (!(t[0] == 0x00 && t[1] == 0x80)) return false;
@@ -406,7 +511,28 @@ bool BMI270::readRaw(RawSample& out) {
   // Either way the cure is the same. Wake it, enable the sensors again in the
   // same transaction, and ask once more. On a sensor that stays awake neither
   // branch is ever taken, so this costs nothing.
-  if (keepAwakeMs_ != 0) holdAwake(keepAwakeMs_);
+  // Before trusting a sample, check the part still holds the configuration it
+  // was given.
+  //
+  // The all-zero test below is not enough on its own. A part that has dozed
+  // off does not necessarily return zeros - it can return the last values it
+  // latched, which look entirely plausible: measured, twenty consecutive
+  // reads came back byte-identical at 1.124 g with the gyro at exactly 0.00
+  // and the temperature stuck at 10.8 C, on a board that had not moved. That
+  // passes every sanity check you would think to write, and it is not data.
+  //
+  // PWR_CTRL is the honest witness. A running part holds the enables it was
+  // given; one that has lost its configuration reads back 0x00. Checking it
+  // costs a single register read per sample.
+  const uint8_t wanted = PWR_ACC_EN | PWR_GYR_EN | PWR_TEMP_EN;
+  uint8_t enables = 0;
+  if (bus_.readRegister(PWR_CTRL, enables) != IMUStatus::Ok || enables != wanted) {
+    trace("readRaw: PWR_CTRL was", enables);
+    if (!resumeAfterSleep()) {
+      trace("readRaw: resume failed", 0);
+      return false;
+    }
+  }
 
   bool got = readSampleRegisters(a, g, t);
 
@@ -417,10 +543,11 @@ bool BMI270::readRaw(RawSample& out) {
   }
 
   if (sampleIsDead(a, g, t)) {
-    // One write is not enough to produce a sample: the accelerometer has to
-    // actually run for a while at its output data rate before there is
-    // anything to read. Give it that time if the caller has allowed it.
-    holdAwake(keepAwakeMs_ != 0 ? keepAwakeMs_ : 25);
+    // Wake it and wait for real data rather than reading straight back. A part
+    // that has dozed off needs its sensors re-enabled and then time to produce
+    // a sample - 46 ms, measured - and the wait has to keep the bus busy or it
+    // simply goes back to sleep during it.
+    wakeAndAwaitData(wakeTimeoutMs_);
     if (!readSampleRegisters(a, g, t)) return false;
 
     // Still nothing. Report the failure rather than handing back a sample of

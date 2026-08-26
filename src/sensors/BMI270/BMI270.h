@@ -40,6 +40,14 @@ class BMI270 : public IMUSensor {
     ConfigNotLoaded,  // blob sent, but INTERNAL_STATUS never reported ready
     Defaults          // configured, but the default settings would not apply
   };
+  // Optional bring-up and recovery trace. A BMI270 failure is almost never
+  // visible from outside - the part answers, accepts writes, and then quietly
+  // returns nothing - so point this at Serial and the sequence explains
+  // itself.
+  //
+  //   imu.setDebugStream(&Serial);
+  void setDebugStream(Print* out) { debug_ = out; }
+
   Stage lastStage() const { return lastStage_; }
   const char* lastStageText() const;
 
@@ -84,20 +92,15 @@ class BMI270 : public IMUSensor {
   // keeps it; an unpowered one cannot.
   bool supplyNotConnected() const { return supplyNotConnected_; }
 
-  // Keep the part out of suspend for this many milliseconds before each
-  // sample. Zero, the default, means do nothing.
+  // How long update() may spend waking a sleeping part and waiting for it to
+  // produce a sample. 150 ms by default; measured, a part that has dozed off
+  // needs about 46 ms before drdy_acc sets.
   //
-  // Only useful on a module that will not stay awake by itself - one where
-  // supplyNotConnected() is true. Such a part loses its whole configuration
-  // whenever the bus goes quiet, and a single wake-up write is not enough to
-  // get a reading out of it: the accelerometer has to actually run at its
-  // output data rate for a while before there is a sample to read.
-  //
-  // This is a workaround, not a fix, and an expensive one - it monopolises the
-  // I2C bus for the whole interval, once per sample. Leave it off unless the
-  // driver has told you the part is not being supplied properly.
-  void setKeepAwakeMs(uint16_t ms) { keepAwakeMs_ = ms; }
-  uint16_t keepAwakeMs() const { return keepAwakeMs_; }
+  // Only ever spent when a sample comes back dead, so a sensor that stays
+  // awake never pays for it. Set it to zero to have update() fail immediately
+  // instead of recovering.
+  void setWakeTimeoutMs(uint16_t ms) { wakeTimeoutMs_ = ms; }
+  uint16_t wakeTimeoutMs() const { return wakeTimeoutMs_; }
 
   // The BMI270's step counter, gesture and motion detectors all run on its
   // internal core, so none of them exist until a configuration image has been
@@ -134,7 +137,8 @@ class BMI270 : public IMUSensor {
   Stage lastStage_ = Stage::None;
   bool porDuringInit_ = false;
   bool supplyNotConnected_ = false;
-  uint16_t keepAwakeMs_ = 0;
+  uint16_t wakeTimeoutMs_ = 300;
+  Print* debug_ = nullptr;
   uint8_t accConf_ = 0xA8;    // 100 Hz, normal filter - the reset default
   uint8_t accRange_ = 0x02;   // +/- 8 g
   uint8_t gyrConf_ = 0xA9;    // 200 Hz
@@ -149,9 +153,16 @@ class BMI270 : public IMUSensor {
   // transaction, so nothing can fall asleep between the two writes.
   bool wakeAndEnable(uint8_t sensors);
 
-  // Writes continuously for ms milliseconds so the part cannot suspend,
-  // re-asserting the sensor configuration as well as the power state.
-  void holdAwake(uint16_t ms);
+  // Re-applies the whole configuration to a part that has lost it, then waits
+  // for real data. False if none arrives.
+  bool resumeAfterSleep();
+
+  // One line of optional trace output.
+  void trace(const char* what, uint8_t value);
+
+  // Wakes the part and polls until it has a sample, keeping the bus busy
+  // throughout. False if nothing arrived within the timeout.
+  bool wakeAndAwaitData(uint16_t timeoutMs);
 
   // Reads the accelerometer, gyroscope and temperature registers in one go.
   bool readSampleRegisters(uint8_t* a, uint8_t* g, uint8_t* t);
