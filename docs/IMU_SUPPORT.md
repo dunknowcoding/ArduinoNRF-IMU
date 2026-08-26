@@ -652,44 +652,40 @@ was rejected, so try another. If it answers `not_init`, see below.
 
 ### A part stuck at `not_init`
 
-`not_init` means the core never ran. The overwhelmingly likely reason is that
-the die is not being supplied, and `begin()` now checks for that itself:
-`supplyNotConnected()` reports it and `lastStageText()` explains it.
+`not_init` means the core never ran. The usual reason is not broken silicon
+and not bad wiring: **some modules do not keep their registers when the I2C bus
+goes quiet.**
 
-**A BMI270 whose VDD is open still answers perfectly.** The pull-ups on SDA and
-SCL push charge in through the pins' clamp diodes, and that is enough to run
-the interface but not the die. Everything a driver normally checks passes:
-`CHIP_ID` reads a stable `0x24`, soft reset appears to work, writes are
-accepted, and reserved bits are masked exactly as the datasheet says — write
-`0xFC` to `PWR_CONF` and read back `0x04`, write `0xFD` to `ACC_RANGE` and read
-back `0x01`. The 8192-byte upload completes with zero failed transactions.
+Such a part loses its whole register file — configuration RAM included, so
+`INTERNAL_STATUS` drops back to `not_init` — within about 25 ms of the last
+transaction. Everything a driver normally checks still passes. `CHIP_ID` reads
+a stable `0x24`, writes are accepted, and reserved bits are masked exactly as
+the datasheet says: write `0xFC` to `PWR_CONF` and read back `0x04`, write
+`0xFD` to `ACC_RANGE` and read back `0x01`. The 8192-byte upload completes with
+zero failed transactions and reads back byte-for-byte identical.
 
-What gives it away is that nothing is *retained*. Let the bus go quiet and
-within about 25 ms the charge drains, the die browns out, and the entire
-register file — configuration RAM included — is back to reset defaults.
-`INTERNAL_STATUS` falls from `init_ok` to `not_init`, `PWR_CONF` returns to
-`0x03`, the temperature registers read the invalid `0x8000`, and every data
-register reads zero.
+Driven without idle gaps, the same part works perfectly — measured at 1.009 g
+with normal gyro noise and a steady temperature.
 
-So test retention, not identity:
+NiusIMU handles this for you. Bring-up holds `PWR_CONF = 0x00` across the
+initialisation window, and `update()` detects a part that has lost its
+configuration, revives it, soft resets, re-uploads the image and waits for both
+sensors to report data ready. `losesStateWhenIdle()` tells you it is happening.
 
-> Write a register a value that is not its default, let the bus sit **completely
-> idle** for at least 100 ms, then read it back. A powered part keeps it
-> indefinitely. An unpowered one loses it, or stops answering altogether.
+**The trap is in your own debugging.** Any gap between configuring the sensor
+and reading it will lose it — `delay()`, obviously, but also a single
+`Serial.print`. The symptom is maddening: your trace reports every step
+succeeding, and the sample immediately after reads zero. If you are writing
+bench code against a part like this, buffer your output and print it after the
+measurement, never during.
 
-The bus really must be idle. Any transaction at all — even one addressed to a
-different device on the same bus — tops the part up and hides the fault
-completely. On the module this was diagnosed on, hammering an address nothing
-responded to kept it initialised and reading **1.012 g**.
+`poweredDownDuringInit()` reports `EVENT` bit 0, `por_detected`, which is set
+during initialisation on such a part. Treat it as corroboration rather than a
+verdict: it is also set by an ordinary soft reset, and it cannot separate "does
+not hold state" from a genuine supply problem.
 
-`por_detected` (`EVENT` bit 0) will also be set, and `poweredDownDuringInit()`
-reports it, but on its own it is not enough to convict: it is set by a soft
-reset as well, and it cannot separate "no supply at all" from "supply too weak
-to hold up the core". Treat `supplyNotConnected()` as the answer and
-`poweredDownDuringInit()` as the corroboration.
-
-If the supply checks out and the part still says `not_init`, only then consider
-a bad image or a counterfeit die.
+Only if the part still reports `not_init` when driven with no idle gaps at all
+should you suspect the image or the supply.
 
 ### Known problems in Bosch's own driver
 

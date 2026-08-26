@@ -77,19 +77,19 @@ const char* BMI270::lastStageText() const {
     case Stage::ConfigNotLoaded:
       switch (lastInternalStatus_ & 0x0Fu) {
         case 0x00:
-          if (supplyNotConnected_) {
-            return "the part is not being supplied - it answered a moment "
-                   "earlier and could not keep a register value across an "
-                   "idle bus. The SDA/SCL pull-ups feed it through its pin "
-                   "diodes, which runs the interface but not the die. Check "
-                   "VDD and GND at the module; the sensor itself is probably "
-                   "fine";
+          if (losesStateWhenIdle_) {
+            return "this part does not keep its registers across an idle bus - "
+                   "it answered a moment earlier and had forgotten a value by "
+                   "the time it was read back. The driver recovers from that "
+                   "by itself during update(), so if bring-up still failed the "
+                   "cause is elsewhere; check the configuration image first";
           }
           if (porDuringInit_) {
-            return "the part power-on-reset itself when its core started - "
-                   "por_detected was set and the configuration registers "
-                   "reverted. Its supply cannot hold up the core: check VDD "
-                   "and GND at the module and fit decoupling at its pins";
+            return "por_detected was set while the core was starting and the "
+                   "configuration registers reverted. On a part that does not "
+                   "hold state across an idle bus this is normal and the "
+                   "driver handles it; if it persists, look at the supply at "
+                   "the module's VDD and GND pins";
           }
           return "image sent, chip still reports not_init - its internal core "
                  "is not running. A working BMI270 answers a bad image with "
@@ -250,7 +250,7 @@ bool BMI270::configurationLoaded() {
   // Poll rather than read once: the chip finishes its self-configuration in
   // its own time after INIT_CTRL is set.
   porDuringInit_ = false;
-  supplyNotConnected_ = false;
+  losesStateWhenIdle_ = false;
 
   // One second, not the datasheet's "at most 20 msec".
   //
@@ -285,7 +285,7 @@ bool BMI270::configurationLoaded() {
       // Before blaming the image or the silicon, check the part is actually
       // powered. This costs one write, one idle wait and two reads, and only
       // ever runs on a bring-up that has already failed.
-      supplyNotConnected_ = !holdsStateAcrossIdleBus();
+      losesStateWhenIdle_ = !holdsStateAcrossIdleBus();
       return false;
     }
     delay(5);

@@ -66,31 +66,29 @@ class BMI270 : public IMUSensor {
   // This is the difference between a part that rejected the image and a part
   // that cannot run at all: the image is irrelevant if the die restarts the
   // moment INIT_CTRL is written. It does not, on its own, say why - see
-  // supplyNotConnected(), which is the far more common reason.
+  // losesStateWhenIdle(), which is the far more common reason.
   bool poweredDownDuringInit() const { return porDuringInit_; }
 
-  // True when the part cannot hold a register value across an idle bus, which
-  // means it is not being supplied at all.
+  // True when the part cannot hold a register value across an idle bus.
   //
-  // A BMI270 whose VDD is open still answers perfectly. The pull-ups on SDA
-  // and SCL pump charge in through the pins' clamp diodes, and that is enough
-  // to run the interface: WHO_AM_I reads 0x24, writes are accepted, reserved
-  // bits are masked exactly as the datasheet says. Every check a driver
-  // normally makes passes. But the charge drains away in the gaps between
-  // transactions, so within about 25 ms of the bus going quiet the die browns
-  // out and the whole register file - configuration RAM included - is gone.
+  // Some BMI270 modules lose their whole register file - configuration RAM
+  // included, so INTERNAL_STATUS falls back to not_init - within about 25 ms
+  // of the I2C bus going quiet. They are not broken and they are not
+  // necessarily mis-wired: driven without idle gaps they deliver correct data,
+  // measured here at 1.009 g with normal gyro noise.
   //
-  // From INTERNAL_STATUS that is indistinguishable from a part that never got
-  // its image: both sit at not_init for ever. Measured on such a module, it
-  // also set por_detected, reported the invalid 0x8000 temperature, and failed
-  // identically with no image loaded - every symptom of dead silicon, from a
-  // part that turned out to be perfect. Kept awake by nothing more than bus
-  // traffic addressed to a different device, it read 1.012 g.
+  // update() recovers from this by itself, so this flag is diagnostic rather
+  // than fatal. It is worth knowing about because it makes such a part look
+  // dead under a debugger: any delay(), and even a single Serial.print between
+  // configuring the sensor and reading it, is long enough to lose everything -
+  // so the trace reports success and the sample after it reads zero.
   //
-  // So test the thing that actually distinguishes them: write a register, let
-  // the bus idle, and see whether the value is still there. A powered part
-  // keeps it; an unpowered one cannot.
-  bool supplyNotConnected() const { return supplyNotConnected_; }
+  // An earlier version of this called the same condition "not being supplied"
+  // and told the caller to check VDD. That was a guess dressed as a diagnosis
+  // and it sent the investigation the wrong way for two sessions. A supply
+  // fault can certainly cause this, but so can a part that simply behaves this
+  // way, and this test cannot tell them apart.
+  bool losesStateWhenIdle() const { return losesStateWhenIdle_; }
 
   // How long update() may spend waking a sleeping part and waiting for it to
   // produce a sample. 150 ms by default; measured, a part that has dozed off
@@ -114,6 +112,14 @@ class BMI270 : public IMUSensor {
 
   bool setAccelRangeG(uint16_t maxG) override;
   bool setGyroRangeDps(uint16_t maxDps) override;
+  // Accepted for interface compatibility, but the cut-off in Hz is ignored.
+  //
+  // The BMI270 has no configurable filter cut-off. ACC_CONF.acc_bwp and
+  // GYR_CONF.gyr_bwp select an oversampling and averaging mode, not a
+  // frequency, and the resulting bandwidth is a fixed fraction of whatever
+  // output data rate is in force. Calling this enables the aliasing-free
+  // performance filter on both sensors, which is the closest thing the part
+  // offers; use setSampleRateHz() to change the bandwidth.
   bool setLowPassFilterHz(uint16_t hz) override;
   bool setSampleRateHz(uint16_t hz) override;
 
@@ -136,7 +142,7 @@ class BMI270 : public IMUSensor {
  private:
   Stage lastStage_ = Stage::None;
   bool porDuringInit_ = false;
-  bool supplyNotConnected_ = false;
+  bool losesStateWhenIdle_ = false;
   uint16_t wakeTimeoutMs_ = 300;
   Print* debug_ = nullptr;
   uint8_t accConf_ = 0xA8;    // 100 Hz, normal filter - the reset default
