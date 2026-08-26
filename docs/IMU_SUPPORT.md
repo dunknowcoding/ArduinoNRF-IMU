@@ -590,31 +590,22 @@ examples for these paths.
 
 ---
 
-## Sensors that need firmware this library does not ship
+## BMI270 configuration image
 
-A few parts are not usable until a firmware image from their manufacturer has
-been uploaded into them. Those images are the vendor's copyrighted work, and
-this library does not redistribute other people's firmware — so where one is
-required, you supply it and the driver loads it for you.
+The BMI270 requires a configuration image before it produces sensor data.
+NiusIMU bundles Bosch Sensortec's standard 8192-byte image and its
+BSD-3-Clause notice, and selects it automatically. `setConfigImage()` and
+`setConfigImageProgmem()` remain available for compatible replacement images.
 
-| Sensor | Image | Where it comes from |
-| --- | --- | --- |
-| **BMI270** | required for **any** output | [Bosch Sensortec BMI270 API](https://github.com/boschsensortec/BMI270_SensorAPI), BSD-3-Clause — see the variants below |
+### What "required" means
 
-No other supported sensor needs one.
-
-### What "required for any output" means
-
-Measured on real silicon with no image loaded: `CHIP_ID` reads `0x24`,
-`INTERNAL_STATUS` reads `not_init`, the `acc_rdy` and `gyr_rdy` bits never set,
-and every data register stays at exactly zero. There is no reduced mode that
-works without it — not even raw acceleration. A BMI270 with no image is inert.
+Without a valid image, `CHIP_ID` can still identify the device, but
+`INTERNAL_STATUS` does not reach `init_ok` and sensor reports are unavailable.
 
 ### If it still will not start
 
-A BMI270 that has been given a valid image and still reports `not_init` is not
-a driver problem. `internalStatus()` and `lastStageText()` tell you which case
-you are in:
+`internalStatus()` and `lastStageText()` preserve the exact initialization
+state:
 
 | `INTERNAL_STATUS` low nibble | Meaning | What to do |
 | --- | --- | --- |
@@ -622,18 +613,9 @@ you are in:
 | `0x02` init_err | the image arrived and was rejected | check you copied the whole 8192 bytes |
 | `0x00` not_init | the internal core never ran | see below |
 
-`not_init` after a complete upload is worth understanding, because it looks
-like a wiring or driver fault and is neither. **A working BMI270 validates what
-it is given** — hand it rubbish and it answers `init_err`. A part that stays at
-`not_init` no matter what you send has never looked at the image at all.
-
-That is straightforward to confirm: reset the part, write `INIT_CTRL = 0x00`,
-send a couple of hundred bytes of nonsense, write `INIT_CTRL = 0x01`, and read
-`INTERNAL_STATUS`. If it says `init_err`, the core is alive and the problem is
-your image. If it says `not_init`, the core is not running.
-
-**That is almost always a power problem, not bad silicon.** Check the supply
-before you conclude anything else — see below.
+`init_err` means the device rejected the selected image. `not_init` means the
+configuration state machine did not complete within the bounded deadline.
+Neither status is converted into a speculative hardware diagnosis.
 
 ### Which image
 
@@ -647,45 +629,20 @@ interchangeable, and only one will be right for your part:
 | `bmi270_context.c` | `bmi270_context_config_file[]` | 8192 |
 | `bmi270_maximum_fifo.c` | `bmi270_maximum_fifo_config_file[]` | 328 |
 
-Start with `bmi270.c`. If the chip answers `init_err` the image reached it and
-was rejected, so try another. If it answers `not_init`, see below.
+The bundled default is the `bmi270.c` standard image. Select a different image
+only when the target variant requires it.
 
 ### A part stuck at `not_init`
 
-`not_init` means the core never ran. The usual reason is not broken silicon
-and not bad wiring: **some modules do not keep their registers when the I2C bus
-goes quiet.**
+`not_init` means the configuration state machine did not reach `init_ok`.
+NiusIMU reports the raw `INTERNAL_STATUS` value and uses bounded retries during
+configuration transfer. The driver does not infer a wiring, supply, or module
+fault from this status alone.
 
-Such a part loses its whole register file — configuration RAM included, so
-`INTERNAL_STATUS` drops back to `not_init` — within about 25 ms of the last
-transaction. Everything a driver normally checks still passes. `CHIP_ID` reads
-a stable `0x24`, writes are accepted, and reserved bits are masked exactly as
-the datasheet says: write `0xFC` to `PWR_CONF` and read back `0x04`, write
-`0xFD` to `ACC_RANGE` and read back `0x01`. The 8192-byte upload completes with
-zero failed transactions and reads back byte-for-byte identical.
-
-Driven without idle gaps, the same part works perfectly — measured at 1.009 g
-with normal gyro noise and a steady temperature.
-
-NiusIMU handles this for you. Bring-up holds `PWR_CONF = 0x00` across the
-initialisation window, and `update()` detects a part that has lost its
-configuration, revives it, soft resets, re-uploads the image and waits for both
-sensors to report data ready. `losesStateWhenIdle()` tells you it is happening.
-
-**The trap is in your own debugging.** Any gap between configuring the sensor
-and reading it will lose it — `delay()`, obviously, but also a single
-`Serial.print`. The symptom is maddening: your trace reports every step
-succeeding, and the sample immediately after reads zero. If you are writing
-bench code against a part like this, buffer your output and print it after the
-measurement, never during.
-
-`poweredDownDuringInit()` reports `EVENT` bit 0, `por_detected`, which is set
-during initialisation on such a part. Treat it as corroboration rather than a
-verdict: it is also set by an ordinary soft reset, and it cannot separate "does
-not hold state" from a genuine supply problem.
-
-Only if the part still reports `not_init` when driven with no idle gaps at all
-should you suspect the image or the supply.
+Normal sampling also has bounded recovery: if a data transfer or readiness
+check fails, `update()` resets and reconfigures the BMI270 before retrying the
+sample. Applications should use a regular sampling cadence and inspect the
+return value from every update.
 
 ### Known problems in Bosch's own driver
 
@@ -701,44 +658,37 @@ silicon, so the defects reported against it are worth checking against. Audited
 | [#16](https://github.com/boschsensortec/BMI270_SensorAPI/issues/16) | Read-modify-write on `INT1_IO_CTRL`/`INT2_IO_CTRL` reads back zeros, so the value written is built on a base that was never read | No read-modify-write anywhere in the configuration path. `ACC_CONF`, `GYR_CONF` and `INT_MAP_DATA` are tracked in the driver and written outright |
 | [#23](https://github.com/boschsensortec/BMI270_SensorAPI/issues/23) | An RTOS `osDelay()` in place of a busy wait makes init fail | Nothing here depends on delay accuracy; every wait is a poll with a deadline |
 | [#21](https://github.com/boschsensortec/BMI270_SensorAPI/issues/21) | FIFO reads ignore the configured maximum transfer length | Bursts are chunked to the `TwoWire` buffer and re-addressed per chunk |
-| [#24](https://github.com/boschsensortec/BMI270_SensorAPI/pull/24), [#29](https://github.com/boschsensortec/BMI270_SensorAPI/issues/29) | Proposal to skip the soft reset when re-initialising after a wake-up, to save the 8 kB re-upload | **Do not.** Measured here: re-uploading without a soft reset first reports `init_ok` and then returns nonsense — 2.268 g where the correct reading was 1.011. Section 4.4 is explicit that `INIT_CTRL=0x01` "must not be performed more than once after POR or soft reset" |
+| [#24](https://github.com/boschsensortec/BMI270_SensorAPI/pull/24), [#29](https://github.com/boschsensortec/BMI270_SensorAPI/issues/29) | Proposal to skip the soft reset when re-initialising after a wake-up, to save the 8 kB re-upload | Recovery performs a soft reset before uploading again, preserving the documented `INIT_CTRL` lifecycle |
 
 The FIFO extraction defects ([#4](https://github.com/boschsensortec/BMI270_SensorAPI/issues/4),
 [#12](https://github.com/boschsensortec/BMI270_SensorAPI/pull/12),
 [#15](https://github.com/boschsensortec/BMI270_SensorAPI/issues/15)) do not
 apply: NiusIMU reads the data registers directly rather than through the FIFO.
 
-### Supplying it
+### Basic use and replacement images
 
 ```cpp
 #include <BMI270.h>
-#include "bmi270_config_file.h"   // your copy, kept with Bosch's licence text
-
 BMI270 imu;
 
 void setup() {
   Wire.begin();
-  imu.setConfigImage(bmi270_config_file, sizeof(bmi270_config_file));
   if (!imu.begin()) {
     Serial.println(imu.lastStageText());   // says exactly what went wrong
   }
 }
 ```
 
-Keep Bosch's copyright notice and licence with the file — BSD-3-Clause asks for
-that, and it is the reason the image is yours to add rather than ours to ship.
-
-Call `setConfigImage()` before `begin()`. Without it `begin()` returns false and
-`lastStageText()` says *"no configuration image supplied"* rather than leaving
-you to wonder whether the sensor is faulty.
+The bundled image needs no setup. When selecting a replacement with
+`setConfigImage()` or `setConfigImageProgmem()`, keep its matching vendor
+license and call the selector before `begin()`.
 
 ---
 
 ## BNO08x reports
 
 The BNO085 and BNO086 are sensor hubs: rather than exposing registers they
-publish *reports*, and you ask for the ones you want. Every report below was
-confirmed delivered by a BNO085 running SH-2 3.2.13.
+publish *reports*, and you ask for the ones you want.
 
 ### Always on after `begin()`
 
@@ -796,10 +746,10 @@ events can occur.
 
 ### Not offered by this part
 
-`0x14`–`0x16` (raw accelerometer, gyroscope, magnetometer) and `0x2A`
-(gyro-integrated rotation vector) were asked for and never answered. Reports
-needing hardware a BNO085 does not have — pressure, ambient light, humidity,
-proximity, heart rate — are not applicable at all.
+The unified driver does not currently expose raw reports `0x14`–`0x16` or the
+gyro-integrated rotation-vector report `0x2A`. Environmental reports such as
+pressure, ambient light, humidity, proximity, and heart rate apply only to
+SH-2 products that implement those sensors.
 
 ### Calibration and tare
 
@@ -808,37 +758,20 @@ proximity, heart rate — are not applicable at all.
 define the current orientation as zero. Persist a tare only once the mounting
 is final.
 
-### If `begin()` is unreliable
+### Bring-up diagnostics
 
-`begin()` is expected to succeed on the first call. If it does not, these are
-the two failures worth telling apart, and `lastError()` names them:
+`lastError()` keeps the main failure classes distinct:
 
 | `lastError()` | Meaning |
 | --- | --- |
-| `NoResponse` | Nothing acknowledged. Check the address (`0x4A` or `0x4B`), and that PS0 and PS1 are both LOW so the part is in I2C mode. `lastWireError()` gives the raw code. |
-| `NoReports` | The part answered, gave a product ID, accepted the configuration, and then delivered nothing. It is on the bus and healthy but not measuring. |
+| `NoResponse` | No SHTP frame was accepted at the selected address. `lastWireError()` preserves the controller result. |
+| `NoProductId` | Transport responded, but no valid SH-2 product response arrived. |
+| `ReportEnableFailed` | A Set Feature command could not be delivered. |
+| `NoReports` | Configuration completed, but no enabled sensor report arrived before the bounded deadline. |
 
-Two things make this driver's bring-up reliable, and both are worth knowing
-if you are writing your own:
-
-**Do not read the sensor before resetting it.** Reading a BNO085 that has
-been streaming leaves the very next write refused, and nothing rescues it -
-not an address probe, not a delay of up to 200 ms. Measured on an ESP32, a
-write with a probe immediately before it was accepted 4 times out of 4, the
-same write with reads in between was refused every time, and settling in
-place of the probe failed 20 times out of 20. Reset first; the reset is what
-resynchronises the stream anyway.
-
-**Wait for the whole boot announcement.** After a reset the part announces
-itself on three channels - the SHTP advertisement, the reset-complete, and an
-unsolicited response on the control channel. The last of these arrives a
-little later than the other two, and configuring the part before it lands
-means every Set Feature command is silently ignored.
-
-Missing either of those gave a bring-up that worked most of the time and
-failed on a fixed cycle, which is far more annoying than one that never
-works. With both in place, 100 consecutive bring-ups at 100 kHz and 400 kHz
-passed, across inter-run gaps of 100, 300 and 900 ms.
+Bring-up resets the SHTP stream before draining boot traffic, explicitly
+requests the product ID, and confirms actual sensor-report traffic after Set
+Feature commands. Every retry is bounded by count and elapsed time.
 
 Use `setDebugStream(&Serial)` to watch the sequence if you need to.
 
@@ -848,23 +781,11 @@ The BNO085 reports its SHTP transport errors on the command channel, as a list
 that grows by one byte per error. `shtpErrorCount()` and `lastShtpError()`
 expose them.
 
-Two errors during boot is normal on this part and does not stop anything
-working - it is what a healthy bring-up looks like. A count that keeps
-climbing while the sensor is running is not normal, and points at the
-transport rather than at your use of the API.
+`invalidHeaderCount()` and `payloadReadFailureCount()` expose host-side framing
+and continuation failures. An all-zero SHTP header means `NoData` during
+polling and is not counted as an error.
 
 ### Bus speed
-
-50 kHz, 100 kHz and 400 kHz all pass 20 bring-ups out of 20; 400 kHz is the
-better default because it is quickest, not because the others are shaky.
-
-An earlier version of this page said not to run the part below 100 kHz. That
-was wrong, and worth explaining because the mistake is an easy one to repeat.
-50 kHz really did fail about one bring-up in six - but not because the bus was
-too slow for the sensor. The opening write is refused more often at 50 kHz,
-each refusal costs an attempt, and the retry budget was counted in attempts
-rather than in time. Two cheap failures used up the allowance that the one
-expensive failure needed. The bus speed was a symptom; the budget was the bug.
 
 `setBusClockHz()` lets the driver set the rate; left alone it will not touch a
 clock you configured yourself, which matters on a bus shared with a slower

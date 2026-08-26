@@ -38,6 +38,9 @@ class BNO08x : public IMUSensor {
   uint8_t whoAmI() override;
   bool isConnected() override;
   bool update() override;
+  IMUUpdateResult lastUpdateResult() const override {
+    return lastUpdateResult_;
+  }
 
   bool setAccelRangeG(uint16_t maxG) override;
   bool setGyroRangeDps(uint16_t maxDps) override;
@@ -116,9 +119,8 @@ class BNO08x : public IMUSensor {
                      int8_t wakePin = -1);
   bool hardwareReset(uint16_t bootDelayMs = 300);
 
-  // Why the last begin/beginI2C failed. A bare bool cannot tell "nothing is
-  // there" from "something is there but is not speaking SHTP", and those two
-  // send you to opposite ends of the bench.
+  // Why the last begin/beginI2C failed. Transport, protocol, and report
+  // configuration failures remain distinct.
   enum class Error : uint8_t {
     None,
     ResetFailed,
@@ -130,9 +132,7 @@ class BNO08x : public IMUSensor {
     // Feature commands went out cleanly and were simply not acted on.
     NoReports
   };
-  // Optional bring-up trace. SHTP failures are almost never visible from the
-  // outside - the chip is on the bus, it acknowledges, and then nothing works
-  // - so point this at Serial and the sequence explains itself.
+  // Optional bring-up trace for SHTP transport and report configuration.
   //
   //   imu.setDebugStream(&Serial);
   //   imu.begin();
@@ -146,16 +146,15 @@ class BNO08x : public IMUSensor {
 
   // --- SHTP transport errors ------------------------------------------------
   //
-  // The BNO085 reports its own protocol errors on the command channel, as a
-  // list that grows by one byte per error. They were being read and thrown
-  // away, which is a shame: when the part is misbehaving it is often saying
-  // why. A handful during boot is normal and harmless - the count climbing
-  // while the sensor is running is not.
+  // The BNO08x reports its protocol errors on the command channel as a list
+  // that grows by one byte per error.
 
   // Total SHTP errors the part has reported since begin().
   uint16_t shtpErrorCount() const { return shtpErrorCount_; }
   // The most recent error byte, or zero if there has not been one.
   uint8_t lastShtpError() const { return lastShtpError_; }
+  uint32_t invalidHeaderCount() const { return invalidHeaderCount_; }
+  uint32_t payloadReadFailureCount() const { return payloadReadFailureCount_; }
 
   // The SH-2 report id of the last sensor report received, whether or not this
   // driver knows how to decode it. Zero until one arrives. Useful for finding
@@ -223,19 +222,12 @@ class BNO08x : public IMUSensor {
   static constexpr size_t kPacketCapacity = 128;
 
   // One complete bring-up: reset, product ID, enable the default reports.
-  // beginI2C() calls this more than once if it has to - see the note there.
-  // lastChance relaxes the "the boot did not finish" check, so a part that
-  // never announces on the control channel can still be brought up rather
-  // than being refused outright. See attemptBringUp().
-  bool attemptBringUp(bool lastChance);
+  bool attemptBringUp();
   // Turns on the four reports begin() promises, and makes sure they are
   // actually arriving rather than merely accepted.
   bool enableDefaultReports();
   // Reads until a sensor report shows up, or the budget runs out.
   bool waitForReports(uint16_t budgetMs);
-  // An address-only transaction, discarded. Cheap, and it puts the controller
-  // back in step after an idle period - see beginI2C().
-  void nudgeBus();
   bool softReset();
   bool requestProductId(uint16_t timeoutMs = 500);
   bool captureProductId();
@@ -262,15 +254,15 @@ class BNO08x : public IMUSensor {
   uint16_t payloadLength_ = 0;
   bool productValid_ = false;
   bool resetSeen_ = false;
-  // Set when a control-channel packet arrives. A BNO085 announces a finished
-  // boot on three channels, and this is the last of them - see softReset().
-  bool controlSeen_ = false;
-  // Set the moment anything at this address answers - a write accepted or a
-  // read that returned data. Distinguishes "difficult" from "not fitted".
+  // Set after the first accepted write or successful read.
   bool sawResponse_ = false;
   uint16_t shtpErrorCount_ = 0;
   uint8_t lastShtpError_ = 0;
   uint32_t reportIntervalUs_ = 50000;
+  IMUUpdateResult lastUpdateResult_ = IMUUpdateResult::NoData;
+  bool receiveFault_ = false;
+  uint32_t invalidHeaderCount_ = 0;
+  uint32_t payloadReadFailureCount_ = 0;
 
   ProductInfo product_;
   Vec3 gyroUncal_{};

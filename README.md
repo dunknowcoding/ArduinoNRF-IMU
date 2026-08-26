@@ -52,7 +52,7 @@ void loop() {
 | Family | Sensors and modules |
 | --- | --- |
 | InvenSense / TDK | MPU-6050, MPU-6500, MPU-6886, MPU-9250, MPU-9255, ICM-20602, ICM-20689, ICM-20948, ICM-42688-P, ICM-45686 |
-| Bosch | BMI088, BMI160, BMI270†, BMI323, BMX055, BNO055 |
+| Bosch | BMI088, BMI160, BMI270, BMI323, BMX055, BNO055 |
 | CEVA | BNO085, BNO086 |
 | ST | LSM303DLHC, LSM303D, LSM6DS3, LSM6DS3TR-C, LSM6DSOX, LSM6DSV, LSM6DSV320X, LSM9DS1, L3G4200D, L3GD20/H |
 | Other motion and magnetic | ADXL345, MMA8452Q, ITG-3200/3205, QMI8658/C, HMC5883L, QMC5883L, QMC6309 |
@@ -67,8 +67,9 @@ See [IMU Support and Usage](docs/IMU_SUPPORT.md) for exact pin maps, core-versus
 carrier selection, clone identification, calibration workflows, limitations,
 and the feature-example index.
 
-† The BMI270 needs a firmware image this library does not ship. See
-[Sensors that need firmware this library does not ship](#sensors-that-need-firmware-this-library-does-not-ship).
+The BMI270 driver selects Bosch Sensortec's standard configuration image by
+default under its BSD-3-Clause terms. Advanced users can still select another
+compatible Bosch image.
 
 ## LSM6DSV320X without a ceiling
 
@@ -84,49 +85,29 @@ imu.begin();
 lsm6dsv320x_fifo_watermark_set(imu.stContext(), 16);
 ```
 
-## Sensors that need firmware this library does not ship
+## BMI270 configuration
 
-A few parts are not usable until a firmware image from their manufacturer has
-been uploaded into them. Those images are the vendor's copyrighted work, and
-this library does not redistribute other people's firmware — so where one is
-required, you supply it and the driver loads it for you.
-
-| Sensor | Image | Where it comes from |
-| --- | --- | --- |
-| **BMI270** | 8192 bytes, required for **any** output | [Bosch Sensortec BMI270 API](https://github.com/boschsensortec/BMI270_SensorAPI) — `bmi270_config_file[]` in `bmi270.c`, BSD-3-Clause |
-
-No other supported sensor needs one.
-
-### What "required for any output" means
-
-Measured on real silicon with no image loaded: `CHIP_ID` reads `0x24`,
-`INTERNAL_STATUS` reads `not_init`, the `acc_rdy` and `gyr_rdy` bits never set,
-and every data register stays at exactly zero. There is no reduced mode that
-works without it — not even raw acceleration. A BMI270 with no image is inert.
-
-### Supplying it
+The BMI270 needs a configuration image before any measurement works. NiusIMU
+ships Bosch Sensortec's standard 8192-byte image with its BSD-3-Clause notice
+and selects it automatically, so the normal path is simply:
 
 ```cpp
 #include <BMI270.h>
-#include "bmi270_config_file.h"   // your copy, kept with Bosch's licence text
 
 BMI270 imu;
 
 void setup() {
   Wire.begin();
-  imu.setConfigImage(bmi270_config_file, sizeof(bmi270_config_file));
   if (!imu.begin()) {
     Serial.println(imu.lastStageText());   // says exactly what went wrong
   }
 }
 ```
 
-Keep Bosch's copyright notice and licence with the file — BSD-3-Clause asks for
-that, and it is the reason the image is yours to add rather than ours to ship.
-
-Call `setConfigImage()` before `begin()`. Without it `begin()` returns false and
-`lastStageText()` says *"no configuration image supplied"* rather than leaving
-you to wonder whether the sensor is faulty.
+Use `setConfigImage()` for another memory-mapped image or
+`setConfigImageProgmem()` for a custom AVR `PROGMEM` image. The standard,
+legacy, context, and maximum-FIFO images are not interchangeable; keep the
+corresponding vendor license with any replacement.
 
 ## Install and build
 
@@ -158,9 +139,9 @@ now build across every major Arduino architecture:
 | megaAVR | Arduino Nano Every | ✅ |
 
 Notes:
-- **Bus recovery** uses each core's default `SDA`/`SCL` pin macros (the earlier
-  `TwoWire::pinSDA()/pinSCL()` accessors exist on only a few cores). On a core
-  that exposes neither, `recoverBus()` falls back to a plain re-init.
+- **Bus recovery** uses each core's default `SDA`/`SCL` pin macros. On a core
+  that exposes neither, `recoverBus()` is a safe no-op rather than restarting
+  an unknown custom pin mapping.
 - **AVR (C++11)**: the ST **LSM6DSV320X** advanced driver is compiled out on AVR
   (its generated register layer needs C++14+ and more flash/RAM than an
   ATmega328P provides). Every other listed sensor builds; a full 6-axis IMU such

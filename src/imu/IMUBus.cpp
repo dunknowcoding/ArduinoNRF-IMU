@@ -1,4 +1,5 @@
 #include "IMUBus.h"
+#include "I2CRecovery.h"
 
 namespace nimu {
 
@@ -10,17 +11,8 @@ void IMUBus::beginI2C(TwoWire& wire, uint8_t addr7, uint32_t clockHz) {
   wire_->begin();
   wire_->setClock(clockHz_);
 
-  // Let the controller settle, then spend a throwaway transaction on it.
-  //
-  // The first transfer after Wire.begin() is unreliable on ESP32: it comes
-  // back NACKed or with a bus fault on a bus that is fine a millisecond later.
-  // Every driver's first act after this call is a WHO_AM_I, so that read got
-  // the bad transfer, the identity check failed, and begin() reported "not
-  // found" for a part sitting right there answering. A real BMI270 reading
-  // 0x24 perfectly well from a scanner was rejected this way.
-  //
-  // A driver cannot assume its caller warmed the bus, so warm it here. The
-  // probe costs microseconds and its result is deliberately ignored.
+  // Give the controller a bounded settling interval, then warm the selected
+  // address before the first register transaction.
   delay(10);
   wire_->beginTransmission(address_);
   (void)wire_->endTransmission();
@@ -49,6 +41,11 @@ void IMUBus::setClockHz(uint32_t clockHz) {
 
 IMUStatus IMUBus::writeRegister(uint8_t reg, uint8_t value) {
   return writeRegisters(reg, &value, 1);
+}
+
+IMUStatus IMUBus::writeRegisterOnce(uint8_t reg, uint8_t value) {
+  return (mode_ == Mode::I2C) ? i2cWriteOnce(reg, &value, 1)
+                              : spiWrite(reg, &value, 1);
 }
 
 IMUStatus IMUBus::readRegister(uint8_t reg, uint8_t& value) {
@@ -92,22 +89,9 @@ static inline void imuWireEnd(TwoWire *wire) {
 #endif
 }
 
-// Recovering a bus that is not stuck is not a no-op, it is damage.
-//
-// The only way to bit-bang the lines is to release the peripheral first, and
-// the only way to bring it back is wire_->begin() - which takes no pins here,
-// so it reopens on the core's DEFAULT SDA/SCL. Any custom pin mapping the
-// sketch chose is silently lost. Worse, on ESP32 core 3.x an end() followed by
-// a pin-less begin() can leave the peripheral in a state where every later
-// transfer returns error 4, so a healthy bus goes permanently dead.
-//
-// Most drivers call this unconditionally at the top of beginI2C(), which meant
-// every single open tore the bus down and rebuilt it. On a bench with a BNO085
-// and a BMI270 sharing one bus, the first driver to initialise killed I2C for
-// everything after it - including itself on the next attempt.
-//
-// So: look before leaping. An idle I2C bus has both lines pulled high. If they
-// are, there is nothing to recover and we must not touch the peripheral.
+// Bus recovery is conditional. Releasing the peripheral and calling the
+// pin-less begin() can discard a caller's custom pin mapping, so an idle bus
+// must remain untouched.
 IMUStatus IMUBus::recoverBus() {
   if (mode_ != Mode::I2C || wire_ == nullptr) {
     return IMUStatus::Ok;  // nothing to recover on SPI
@@ -116,23 +100,18 @@ IMUStatus IMUBus::recoverBus() {
   // ESP32 2.x). Use the portable default SDA/SCL pin macros that every target
   // core defines.
 #if !(defined(SDA) && defined(SCL))
-  // Without knowing the lines we cannot tell a stuck bus from a healthy one,
-  // and a blind end() + begin() is more likely to break a working bus than to
-  // rescue a jammed one. Leave it alone.
+  // Without the line identities, recovery cannot be performed safely.
   return IMUStatus::Ok;
 #else
   const uint8_t sda = static_cast<uint8_t>(SDA);
   const uint8_t scl = static_cast<uint8_t>(SCL);
 
-  // Reading the pads works while the peripheral owns the pins on every core
-  // this library targets, so this costs nothing and risks nothing.
+  // An idle bus has both lines released high.
   if (digitalRead(sda) == HIGH && digitalRead(scl) == HIGH) {
-    return IMUStatus::Ok;  // idle and healthy - do not touch it
+    return IMUStatus::Ok;
   }
 
-  // Genuinely stuck: a device is holding SDA low and nobody can start a
-  // transfer. Now the teardown is worth its cost. Note that the bus comes back
-  // on the default pins - unavoidable, since begin() is the only way back.
+  // A low line requires the bounded clock-pulse and STOP recovery sequence.
   imuWireEnd(wire_);
   pinMode(scl, OUTPUT);
   pinMode(sda, INPUT_PULLUP);
@@ -171,32 +150,39 @@ IMUStatus IMUBus::ping() {
     return IMUStatus::Ok;  // SPI has no addressed ACK to probe
   }
   wire_->beginTransmission(address_);
-  return (wire_->endTransmission() == 0) ? IMUStatus::Ok
-                                         : IMUStatus::NotConnected;
+  if (wire_->endTransmission() != 0) return IMUStatus::NotConnected;
+  settleAfterTransaction();
+  return IMUStatus::Ok;
 }
 
 // ---------------------------------------------------------------- I2C ------
 
 IMUStatus IMUBus::i2cWrite(uint8_t reg, const uint8_t* buffer, size_t len) {
-  // Retry a refused write, the same way i2cRead retries its addressing phase.
-  //
-  // A single dropped write is not a dead device, and treating it as one is
-  // ruinous for anything that writes a lot. Measured on a healthy bench bus, a
-  // BMI270 configuration upload - roughly 1500 transactions - saw fifteen
-  // refusals. One of them landed on INIT_CTRL, so the part was never told to
-  // begin initialising: the whole 8192-byte image went nowhere and the chip
-  // reported not_init, which reads exactly like a sensor that ignored you.
-  //
-  // Three attempts. The bus recovers within a couple of milliseconds or it is
-  // genuinely broken.
+  // Retry bounded transient transfer errors; persistent errors fail closed.
   for (uint8_t attempt = 0; attempt < 3; ++attempt) {
     wire_->beginTransmission(address_);
     wire_->write(reg);
     if (len != 0) wire_->write(buffer, len);
-    if (wire_->endTransmission() == 0) return IMUStatus::Ok;
+    if (wire_->endTransmission() == 0) {
+      settleAfterTransaction();
+      return IMUStatus::Ok;
+    }
+    detail::resetI2CControllerAfterError(*wire_);
     delay(2);
   }
   return IMUStatus::BusError;
+}
+
+IMUStatus IMUBus::i2cWriteOnce(uint8_t reg, const uint8_t* buffer, size_t len) {
+  wire_->beginTransmission(address_);
+  wire_->write(reg);
+  if (len != 0) wire_->write(buffer, len);
+  if (wire_->endTransmission() != 0) {
+    detail::resetI2CControllerAfterError(*wire_);
+    return IMUStatus::BusError;
+  }
+  settleAfterTransaction();
+  return IMUStatus::Ok;
 }
 
 IMUStatus IMUBus::i2cRead(uint8_t reg, uint8_t* buffer, size_t len) {
@@ -209,34 +195,36 @@ IMUStatus IMUBus::i2cRead(uint8_t reg, uint8_t* buffer, size_t len) {
       chunk = kMaxI2CBurst;
     }
 
-    // Two attempts, not one.
-    //
-    // A transfer that NACKs does not always mean the device is absent: the
-    // controller is briefly unhappy after a failed transfer to a different
-    // address, and the read that follows fails even though its target is
-    // answering. begin() walks the primary address before the alternate, so
-    // on any board strapped to the alternate the identity read is always the
-    // one immediately after a NACK - and a real BMI270 reporting 0x24 to a
-    // scanner was rejected as "not found" every time because of it.
-    bool addressed = false;
-    for (uint8_t attempt = 0; attempt < 2 && !addressed; ++attempt) {
+    // Retry the complete addressed read, including requestFrom(), so a short
+    // transfer cannot leave stale bytes queued for the next transaction.
+    bool complete = false;
+    for (uint8_t attempt = 0; attempt < 3 && !complete; ++attempt) {
       wire_->beginTransmission(address_);
       wire_->write(static_cast<uint8_t>(reg + offset));
       // Repeated start (no stop) keeps the read tied to the address just set.
-      addressed = (wire_->endTransmission(false) == 0);
-      if (!addressed) delay(2);
-    }
-    if (!addressed) {
-      return IMUStatus::BusError;
-    }
+      if (wire_->endTransmission(false) != 0) {
+        while (wire_->available()) (void)wire_->read();
+        detail::resetI2CControllerAfterError(*wire_);
+        delay(2);
+        continue;
+      }
 
-    size_t got = wire_->requestFrom(address_, static_cast<uint8_t>(chunk), true);
-    if (got != chunk) {
-      return IMUStatus::BusError;
+      const uint8_t requested = static_cast<uint8_t>(chunk);
+      const size_t got = static_cast<size_t>(
+          wire_->requestFrom(address_, requested, static_cast<uint8_t>(true)));
+      if (got == chunk) {
+        for (size_t i = 0; i < chunk; ++i) {
+          buffer[offset + i] = static_cast<uint8_t>(wire_->read());
+        }
+        settleAfterTransaction();
+        complete = true;
+      } else {
+        while (wire_->available()) (void)wire_->read();
+        detail::resetI2CControllerAfterError(*wire_);
+        delay(2);
+      }
     }
-    for (size_t i = 0; i < chunk; ++i) {
-      buffer[offset + i] = static_cast<uint8_t>(wire_->read());
-    }
+    if (!complete) return IMUStatus::BusError;
     offset += chunk;
   }
   return IMUStatus::Ok;
@@ -253,6 +241,7 @@ IMUStatus IMUBus::spiWrite(uint8_t reg, const uint8_t* buffer, size_t len) {
   }
   digitalWrite(csPin_, HIGH);
   spi_->endTransaction();
+  settleAfterTransaction();
   return IMUStatus::Ok;
 }
 
@@ -268,6 +257,7 @@ IMUStatus IMUBus::spiRead(uint8_t reg, uint8_t* buffer, size_t len) {
   }
   digitalWrite(csPin_, HIGH);
   spi_->endTransaction();
+  settleAfterTransaction();
   return IMUStatus::Ok;
 }
 

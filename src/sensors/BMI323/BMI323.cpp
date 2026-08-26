@@ -43,7 +43,9 @@ bool BMI323::readWords(uint8_t reg, uint16_t* words, size_t count) {
   wire_->write(reg);
   if (wire_->endTransmission(false) != 0) return false;
   const uint8_t bytes = static_cast<uint8_t>(count * 2 + 2);
-  if (wire_->requestFrom(address_, bytes, true) != bytes) return false;
+  if (wire_->requestFrom(address_, bytes, static_cast<uint8_t>(true)) != bytes) {
+    return false;
+  }
   (void)wire_->read();
   (void)wire_->read();  // BMI323 I2C reads return two protocol dummy bytes.
   for (size_t i = 0; i < count; ++i) {

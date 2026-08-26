@@ -60,10 +60,28 @@ class IMUBus {
   /** Change the bus clock after begin*(). */
   void setClockHz(uint32_t clockHz);
 
+  /**
+   * Require a quiet interval after each completed transfer. Some sensors use
+   * this interval to leave a power-saving interface state before accepting
+   * another command. Zero (the default) adds no delay.
+   */
+  void setPostTransactionDelayUs(uint16_t delayUs) {
+    postTransactionDelayUs_ = delayUs;
+  }
+
   // --- Register primitives. All return IMUStatus::Ok on success. ---
 
   /** Write one 8-bit register. */
   IMUStatus writeRegister(uint8_t reg, uint8_t value);
+
+  /**
+   * Write one 8-bit register exactly once.
+   *
+   * Use this only for self-clearing commands whose execution can make the
+   * device stop acknowledging before the controller observes the final ACK.
+   * Retrying such a command can restart the operation indefinitely.
+   */
+  IMUStatus writeRegisterOnce(uint8_t reg, uint8_t value);
 
   /** Read one 8-bit register into @p value. */
   IMUStatus readRegister(uint8_t reg, uint8_t& value);
@@ -99,9 +117,15 @@ class IMUBus {
   enum class Mode : uint8_t { None, I2C, SPI };
 
   IMUStatus i2cWrite(uint8_t reg, const uint8_t* buffer, size_t len);
+  IMUStatus i2cWriteOnce(uint8_t reg, const uint8_t* buffer, size_t len);
   IMUStatus i2cRead(uint8_t reg, uint8_t* buffer, size_t len);
   IMUStatus spiWrite(uint8_t reg, const uint8_t* buffer, size_t len);
   IMUStatus spiRead(uint8_t reg, uint8_t* buffer, size_t len);
+  void settleAfterTransaction() const {
+    if (postTransactionDelayUs_ != 0) {
+      delayMicroseconds(postTransactionDelayUs_);
+    }
+  }
 
   Mode mode_ = Mode::None;
   TwoWire* wire_ = nullptr;
@@ -111,6 +135,7 @@ class IMUBus {
   uint8_t spiReadFlag_ = 0x80;
   uint8_t spiReadDummyBytes_ = 0;
   uint32_t clockHz_ = 400000;
+  uint16_t postTransactionDelayUs_ = 0;
 };
 
 }  // namespace nimu

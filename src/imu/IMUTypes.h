@@ -88,10 +88,17 @@ struct IMUCalibration {
 /** Result codes returned by the bus / driver layer. */
 enum class IMUStatus : uint8_t {
   Ok = 0,
-  BusError,        ///< I2C/SPI transfer failed (NACK, timeout, wiring)
+  BusError,        ///< I2C/SPI transfer failed (NACK, timeout, controller state)
   NotConnected,    ///< WHO_AM_I did not match the expected device id
   Unsupported,     ///< the chip does not implement this feature
   BadParameter,    ///< an argument was out of range
+};
+
+/** Outcome of the most recent update() call. */
+enum class IMUUpdateResult : uint8_t {
+  Sample = 0,  ///< a fresh sample replaced the cached snapshot
+  NoData,      ///< the device is healthy but no fresh report was queued
+  Error,       ///< a transport or protocol operation failed
 };
 
 /** Human-readable text for an IMUStatus (handy in Serial diagnostics). */

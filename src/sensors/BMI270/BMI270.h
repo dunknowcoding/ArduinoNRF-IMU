@@ -5,45 +5,51 @@
 #define ARDUINONRF_IMU_BMI270_H
 
 #include "../../imu/IMUSensor.h"
+#include "BMI270_Config.h"
 #include "BMI270_Registers.h"
 
 namespace nimu {
 
 class BMI270 : public IMUSensor {
  public:
-  BMI270() { name_ = "BMI270"; }
+  BMI270() { name_ = "BMI270"; useDefaultConfigImage(); }
 
   bool begin() override;
   bool beginI2C(TwoWire& wire, uint8_t address) override;
 
-  // Supply Bosch's 8192-byte configuration image. Required before begin().
-  //
-  // This library does not redistribute other vendors' firmware, so the image
-  // is yours to provide - see BMI270_Config.h for where to get it and what
-  // BSD-3-Clause asks of you. The pointer must stay valid for the life of the
-  // object; pointing it at a PROGMEM array will not work, the bytes have to be
-  // readable directly.
+  // Supply a custom configuration image instead of the bundled standard Bosch
+  // image. The pointer must stay valid for the life of the object.
   void setConfigImage(const uint8_t* image, size_t length) {
     configImage_ = image;
     configImageLength_ = length;
+    configImageProgmem_ = false;
   }
 
-  // Which stage of bring-up failed. begin() returning false says nothing about
-  // whether the part is absent, refused its identity check, or choked part way
-  // through the 8 KB configuration upload - and those need different fixes.
+  // AVR callers whose custom image is in PROGMEM use this form.
+  void setConfigImageProgmem(const uint8_t* image, size_t length) {
+    configImage_ = image;
+    configImageLength_ = length;
+    configImageProgmem_ = true;
+  }
+
+  void useDefaultConfigImage() {
+    configImage_ = bmi270::kDefaultConfigImage;
+    configImageLength_ = bmi270::kDefaultConfigImageLength;
+    configImageProgmem_ = true;
+  }
+
+  // Which stage of bring-up failed: identity, reset, configuration transfer,
+  // configuration status, or default setup.
   enum class Stage : uint8_t {
     None,
     NotConnected,     // WHO_AM_I did not read back 0x24
     ResetFailed,      // soft reset issued, chip did not come back
-    ConfigFileStub,   // the bundled configuration image is a placeholder
+    ConfigFileStub,   // no usable configuration image is selected
     ConfigUpload,     // the configuration blob did not transfer
     ConfigNotLoaded,  // blob sent, but INTERNAL_STATUS never reported ready
     Defaults          // configured, but the default settings would not apply
   };
-  // Optional bring-up and recovery trace. A BMI270 failure is almost never
-  // visible from outside - the part answers, accepts writes, and then quietly
-  // returns nothing - so point this at Serial and the sequence explains
-  // itself.
+  // Optional bring-up and recovery trace.
   //
   //   imu.setDebugStream(&Serial);
   void setDebugStream(Print* out) { debug_ = out; }
@@ -60,43 +66,8 @@ class BMI270 : public IMUSensor {
   // received an image and rejected it, which is a different problem entirely.
   uint8_t internalStatus() const { return lastInternalStatus_; }
 
-  // True when the part power-on-reset itself while its core was being
-  // started. Sampled during begin() when the configuration fails to take.
-  //
-  // This is the difference between a part that rejected the image and a part
-  // that cannot run at all: the image is irrelevant if the die restarts the
-  // moment INIT_CTRL is written. It does not, on its own, say why - see
-  // losesStateWhenIdle(), which is the far more common reason.
-  bool poweredDownDuringInit() const { return porDuringInit_; }
-
-  // True when the part cannot hold a register value across an idle bus.
-  //
-  // Some BMI270 modules lose their whole register file - configuration RAM
-  // included, so INTERNAL_STATUS falls back to not_init - within about 25 ms
-  // of the I2C bus going quiet. They are not broken and they are not
-  // necessarily mis-wired: driven without idle gaps they deliver correct data,
-  // measured here at 1.009 g with normal gyro noise.
-  //
-  // update() recovers from this by itself, so this flag is diagnostic rather
-  // than fatal. It is worth knowing about because it makes such a part look
-  // dead under a debugger: any delay(), and even a single Serial.print between
-  // configuring the sensor and reading it, is long enough to lose everything -
-  // so the trace reports success and the sample after it reads zero.
-  //
-  // An earlier version of this called the same condition "not being supplied"
-  // and told the caller to check VDD. That was a guess dressed as a diagnosis
-  // and it sent the investigation the wrong way for two sessions. A supply
-  // fault can certainly cause this, but so can a part that simply behaves this
-  // way, and this test cannot tell them apart.
-  bool losesStateWhenIdle() const { return losesStateWhenIdle_; }
-
-  // How long update() may spend waking a sleeping part and waiting for it to
-  // produce a sample. 150 ms by default; measured, a part that has dozed off
-  // needs about 46 ms before drdy_acc sets.
-  //
-  // Only ever spent when a sample comes back dead, so a sensor that stays
-  // awake never pays for it. Set it to zero to have update() fail immediately
-  // instead of recovering.
+  // How long update() may spend restoring the configured state and waiting
+  // for a fresh sample. Set it to zero to fail immediately instead.
   void setWakeTimeoutMs(uint16_t ms) { wakeTimeoutMs_ = ms; }
   uint16_t wakeTimeoutMs() const { return wakeTimeoutMs_; }
 
@@ -216,13 +187,13 @@ class BMI270 : public IMUSensor {
     int16_t ax, ay, az;
     int16_t gx, gy, gz;
     int16_t temp;
+    uint32_t sensorTime;
   };
   bool readRaw(RawSample& out);
+  uint32_t sensorTimeTicks() const { return lastSensorTime_; }
 
  private:
   Stage lastStage_ = Stage::None;
-  bool porDuringInit_ = false;
-  bool losesStateWhenIdle_ = false;
   uint16_t wakeTimeoutMs_ = 300;
   Print* debug_ = nullptr;
   uint8_t accConf_ = 0xA8;    // 100 Hz, normal filter - the reset default
@@ -231,10 +202,7 @@ class BMI270 : public IMUSensor {
   uint8_t gyrRange_ = 0x00;   // +/- 2000 dps
   uint8_t intMapData_ = 0x00; // what routeDataReadyInterrupt() has mapped
   uint8_t lastInternalStatus_ = 0xFF;
-
-  // Writes a register, lets the bus go quiet, and reads it back. False when
-  // the value did not survive, which means the die is not being supplied.
-  bool holdsStateAcrossIdleBus();
+  uint32_t lastSensorTime_ = 0;
 
   // Clears advanced power save and enables the given sensors in a single
   // transaction, so nothing can fall asleep between the two writes.
@@ -260,8 +228,9 @@ class BMI270 : public IMUSensor {
   bool configureMotion(uint8_t page, uint8_t offset, uint16_t thresholdMg,
                        uint16_t durationMs, bool x, bool y, bool z);
 
-  // Reads the accelerometer, gyroscope and temperature registers in one go.
-  bool readSampleRegisters(uint8_t* a, uint8_t* g, uint8_t* t);
+  // Reads acceleration, angular rate, sensor time and temperature.
+  bool readSampleRegisters(uint8_t* a, uint8_t* g, uint8_t* t,
+                           uint32_t& sensorTime);
 
   // True when a sample is the all-zero, invalid-temperature signature of a
   // part that is not running.
@@ -269,6 +238,8 @@ class BMI270 : public IMUSensor {
                            const uint8_t* t);
   const uint8_t* configImage_ = nullptr;
   size_t configImageLength_ = 0;
+  bool configImageProgmem_ = false;
+  uint8_t configByte(size_t offset) const;
   bool configureDefaults();
   bool uploadConfiguration();
   bool writeConfigChunk(uint16_t index, const uint8_t* data, uint16_t len);

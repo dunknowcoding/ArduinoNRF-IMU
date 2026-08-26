@@ -67,6 +67,11 @@ class IMUSensor {
    */
   virtual bool update() = 0;
 
+  /** Distinguish normal polling without a queued sample from an actual error. */
+  virtual IMUUpdateResult lastUpdateResult() const {
+    return IMUUpdateResult::Error;
+  }
+
   /** The whole last snapshot at once. */
   const IMUData& data() const { return data_; }
 

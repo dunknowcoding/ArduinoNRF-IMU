@@ -1,7 +1,5 @@
 #include "BMI270.h"
 
-#include "BMI270_Config.h"
-
 namespace nimu {
 using namespace bmi270;
 
@@ -24,6 +22,7 @@ bool BMI270::begin() {
   //
   // A ping is one addressing phase and leaves no state behind.
   bus_.beginI2C(Wire, kAddrSDOLow, clockHz_);
+  bus_.setPostTransactionDelayUs(450);
   const bool low = (bus_.ping() == IMUStatus::Ok);
   if (!low) {
     bus_.beginI2C(Wire, kAddrSDOHigh, clockHz_);
@@ -39,8 +38,22 @@ bool BMI270::begin() {
 bool BMI270::beginI2C(TwoWire& wire, uint8_t address) {
   lastStage_ = Stage::None;
   bus_.beginI2C(wire, address, clockHz_);
+  // The BMI270 starts with advanced power save enabled. Bosch requires a
+  // 450-us quiet interval after every interface transaction in that state.
+  // Keep the conservative interval for the session so recovery and optional
+  // power-mode changes cannot violate the device timing contract.
+  bus_.setPostTransactionDelayUs(450);
   bus_.recoverBus();
-  if (!isConnected()) {
+  // An address ACK is enough authority to place the explicitly selected
+  // BMI270 into a defined state. Requiring CHIP_ID before soft reset can
+  // deadlock recovery when the register interface is between power modes:
+  // writes are accepted, but the first read is not yet available.
+  bool acknowledged = false;
+  for (uint8_t attempt = 0; attempt < 4 && !acknowledged; ++attempt) {
+    acknowledged = bus_.ping() == IMUStatus::Ok;
+    if (!acknowledged) delay(2);
+  }
+  if (!acknowledged) {
     lastStage_ = Stage::NotConnected;
     return false;
   }
@@ -76,25 +89,8 @@ const char* BMI270::lastStageText() const {
     case Stage::ConfigUpload:    return "the configuration blob would not transfer";
     case Stage::ConfigNotLoaded:
       switch (lastInternalStatus_ & 0x0Fu) {
-        case 0x00:
-          if (losesStateWhenIdle_) {
-            return "this part does not keep its registers across an idle bus - "
-                   "it answered a moment earlier and had forgotten a value by "
-                   "the time it was read back. The driver recovers from that "
-                   "by itself during update(), so if bring-up still failed the "
-                   "cause is elsewhere; check the configuration image first";
-          }
-          if (porDuringInit_) {
-            return "por_detected was set while the core was starting and the "
-                   "configuration registers reverted. On a part that does not "
-                   "hold state across an idle bus this is normal and the "
-                   "driver handles it; if it persists, look at the supply at "
-                   "the module's VDD and GND pins";
-          }
-          return "image sent, chip still reports not_init - its internal core "
-                 "is not running. A working BMI270 answers a bad image with "
-                 "init_err, so a part that never leaves not_init has not "
-                 "started at all";
+        case 0x00: return "configuration state machine did not reach init_ok "
+                          "before the bounded timeout";
         case 0x02: return "the chip reports init_err - it received an image but "
                           "rejected it";
         case 0x03: return "the chip reports drv_err";
@@ -107,6 +103,7 @@ const char* BMI270::lastStageText() const {
 
 bool BMI270::beginSPI(SPIClass& spi, uint8_t csPin) {
   bus_.beginSPI(spi, csPin, 1000000, 0x80);
+  bus_.setPostTransactionDelayUs(450);
   whoAmI();  // BMI2 SPI needs one dummy transaction after interface select.
   if (!isConnected()) {
     return false;
@@ -121,14 +118,8 @@ uint8_t BMI270::whoAmI() {
 }
 
 bool BMI270::isConnected() {
-  // Ask more than once before declaring the part absent.
-  //
-  // A single identity read is not a reliable test. Sampled 30 times on a
-  // quiet, freshly reset BMI270, CHIP_ID came back correct 29 times and the
-  // read failed outright once - and the first transaction after an idle bus
-  // is the likeliest one to go, which is exactly where this call sits. One
-  // unlucky read was enough to report a healthy sensor as "not a BMI270",
-  // which sends you looking at the wiring for a fault that is not there.
+  // Tolerate a transient controller or bus response during bring-up before
+  // declaring that the expected identity is unavailable.
   for (uint8_t attempt = 0; attempt < 4; ++attempt) {
     if (whoAmI() == kChipId) return true;
     delay(2);
@@ -137,31 +128,20 @@ bool BMI270::isConnected() {
 }
 
 bool BMI270::reset() {
-  if (bus_.writeRegister(CMD, CMD_SOFT_RESET) != IMUStatus::Ok) {
-    return false;
-  }
+  // The reset command can be accepted even when the controller reports a
+  // missing final ACK. Decide success from CHIP_ID after the mandatory reset
+  // interval. A controller left in an error state is reset by IMUBus before
+  // this function continues.
+  for (uint8_t commandAttempt = 0; commandAttempt < 3; ++commandAttempt) {
+    (void)bus_.writeRegisterOnce(CMD, CMD_SOFT_RESET);
+    delay(5);
 
-  // Poll for the chip to come back rather than assuming a fixed delay is
-  // enough.
-  //
-  // A soft reset drops the BMI270 into suspend and it NACKs everything until
-  // it is ready again; the datasheet's 2 ms is a minimum, not a guarantee, and
-  // on a shared bus it is routinely longer. Checking once after 20 ms meant a
-  // perfectly good part - one reading 0x24 to a bus scanner all day - was
-  // reported as "did not come back" and bring-up stopped there.
-  //
-  // Polling costs nothing when the chip is quick and rescues the case where it
-  // is not.
-  // Poll without sleeping.
-  //
-  // This used to delay(5) between attempts, which is a small idle gap each
-  // time round - and on a part that does not hold its state across an idle
-  // bus, those gaps are the very thing being recovered from. Reading flat out
-  // both polls and keeps the bus alive, and it costs nothing on a part that
-  // comes back immediately.
-  const uint32_t deadline = millis() + 300;
-  while (millis() < deadline) {
-    if (whoAmI() == kChipId) return true;
+    // Start configuration as soon as the reset window opens. Some interfaces
+    // provide only a short post-reset access window until PWR_CONF is written.
+    const uint32_t deadline = millis() + 15;
+    while (millis() < deadline) {
+      if (whoAmI() == kChipId) return true;
+    }
   }
   return false;
 }
@@ -178,11 +158,16 @@ bool BMI270::writeConfigChunk(uint16_t index, const uint8_t* data,
   return bus_.writeRegisters(INIT_DATA, data, len) == IMUStatus::Ok;
 }
 
+uint8_t BMI270::configByte(size_t offset) const {
+#if defined(__AVR__)
+  if (configImageProgmem_) return pgm_read_byte(configImage_ + offset);
+#else
+  (void)configImageProgmem_;
+#endif
+  return configImage_[offset];
+}
+
 bool BMI270::uploadConfiguration() {
-  // The image belongs to the caller - see BMI270_Config.h for why this library
-  // ships none of it. Without one there is nothing to upload and nothing the
-  // part can do, so say that plainly instead of pretending to try.
-  //
   // Do not police the length beyond "present and even". Bosch ships several
   // images for this chip and they are not all the same size: the standard,
   // legacy and context builds are 8192 bytes, while maximum_fifo is 328. A
@@ -208,7 +193,9 @@ bool BMI270::uploadConfiguration() {
     if (len > kChunk) {
       len = kChunk;
     }
-    if (!writeConfigChunk(i, &configImage_[i], len)) {
+    uint8_t chunk[kChunk];
+    for (uint16_t j = 0; j < len; ++j) chunk[j] = configByte(i + j);
+    if (!writeConfigChunk(i, chunk, len)) {
       return false;
     }
   }
@@ -217,23 +204,11 @@ bool BMI270::uploadConfiguration() {
     return false;
   }
 
-  // Hold advanced power save off while the core starts, instead of simply
-  // waiting out the initialisation window.
-  //
-  // The datasheet has you clear PWR_CONF once before the upload and assumes it
-  // stays clear. On some parts it does not: advanced power save comes back
-  // during the 150 ms the core needs, the part drops into suspend before it
-  // has finished, and INTERNAL_STATUS sits at not_init for ever afterwards.
-  //
-  // Measured three times each on a part that behaved this way: clearing it
-  // once and waiting reached init_ok 0 times out of 3, and so did rewriting it
-  // before every chunk of the upload - the upload was never the problem.
-  // Holding it down across this window reached init_ok 3 times out of 3.
-  //
-  // On a part that does not need it this rewrites a register with the value it
-  // already holds, which costs a few hundred microseconds and changes nothing.
-  for (uint32_t until = millis() + 150; millis() < until; ) {
-    bus_.writeRegister(PWR_CONF, 0x00);
+  // Keep the explicitly selected power policy stable while the internal
+  // configuration state machine starts. This is bounded to the documented
+  // startup window and stops before normal sampling begins.
+  for (uint32_t until = millis() + 150; millis() < until;) {
+    if (bus_.writeRegister(PWR_CONF, 0x00) != IMUStatus::Ok) return false;
   }
   if (!configurationLoaded()) {
     lastStage_ = Stage::ConfigNotLoaded;
@@ -249,9 +224,6 @@ bool BMI270::configurationLoaded() {
   //
   // Poll rather than read once: the chip finishes its self-configuration in
   // its own time after INIT_CTRL is set.
-  porDuringInit_ = false;
-  losesStateWhenIdle_ = false;
-
   // One second, not the datasheet's "at most 20 msec".
   //
   // Bosch's own API carried a 20 ms wait here and had to change it: issue #7
@@ -268,79 +240,11 @@ bool BMI270::configurationLoaded() {
       if ((status & 0x0Fu) == 0x01u) return true;   // init_ok
     }
 
-    // Ask the part why it is not answering, rather than only that it is not.
-    //
-    // A BMI270 whose core browns out as it starts looks identical from
-    // INTERNAL_STATUS to one that simply never got its image: both sit at
-    // not_init for ever. EVENT tells them apart, and it is the difference
-    // between "try a different image" and "fix the power". por_detected
-    // clears on read, so catch it here rather than after the loop.
-    uint8_t event = 0;
-    if (bus_.readRegister(EVENT, event) == IMUStatus::Ok &&
-        (event & EVENT_POR_DETECTED) != 0) {
-      porDuringInit_ = true;
-    }
-
     if (millis() >= deadline) {
-      // Before blaming the image or the silicon, check the part is actually
-      // powered. This costs one write, one idle wait and two reads, and only
-      // ever runs on a bring-up that has already failed.
-      losesStateWhenIdle_ = !holdsStateAcrossIdleBus();
       return false;
     }
     delay(5);
   }
-}
-
-bool BMI270::holdsStateAcrossIdleBus() {
-  // Establish that it is talking right now, so that going quiet later means
-  // something. Without this the test cannot tell an unpowered part from one
-  // that was never on the bus at all, and it must not blame the supply for a
-  // sensor that simply is not fitted.
-  uint8_t identity = 0;
-  if (bus_.readRegister(CHIP_ID, identity) != IMUStatus::Ok ||
-      identity != kChipId) {
-    return true;   // not answering even now; a different fault entirely
-  }
-
-  // ACC_CONF is a full eight-bit register with no reserved bits, so the
-  // readback is an exact comparison rather than a masked one, and it is safe
-  // to disturb on a bring-up that has already failed.
-  const uint8_t probe = 0x57;          // not the 0xA8 reset default
-  if (bus_.writeRegister(ACC_CONF, probe) != IMUStatus::Ok) {
-    // It answered a moment ago and will not take a write now. That is the
-    // fault, not an excuse to ignore it - the original version of this check
-    // treated a refused transaction as "inconclusive" and so never fired on
-    // the very board it was written for.
-    return false;
-  }
-
-  uint8_t immediate = 0;
-  if (bus_.readRegister(ACC_CONF, immediate) != IMUStatus::Ok) return false;
-  if (immediate != probe) {
-    // Accepted the write but did not keep it even for a moment. Still a part
-    // that cannot hold state.
-    return false;
-  }
-
-  // The bus must be genuinely quiet here. Any transaction, even one addressed
-  // to another device, tops an unpowered part up through its clamp diodes and
-  // hides exactly what this is looking for.
-  //
-  // Measured on such a module the value survived 20 ms and was gone by 40, so
-  // waiting only 40 landed on the boundary and reported "held" about as often
-  // as not. This is deliberately far clear of it; a powered part holds a
-  // register indefinitely, so a long wait costs nothing but certainty.
-  delay(120);
-
-  uint8_t later = 0;
-  if (bus_.readRegister(ACC_CONF, later) != IMUStatus::Ok) {
-    return false;    // went silent across an idle gap
-  }
-  const bool held = (later == probe);
-
-  bus_.writeRegister(ACC_CONF, 0xA8);  // put the default back
-  return held;
 }
 
 bool BMI270::configureDefaults() {
@@ -351,24 +255,20 @@ bool BMI270::configureDefaults() {
   ok &= setLowPassFilterHz(50);
   ok &= wakeAndEnable(PWR_ACC_EN | PWR_GYR_EN | PWR_TEMP_EN);
 
-  // Wait for the first sample by polling, not by sleeping. delay(80) here was
-  // an eighty millisecond idle gap immediately after enabling the sensors,
-  // which is exactly long enough for a part that will not hold its state
-  // across an idle bus to lose everything that was just configured.
-  wakeAndAwaitData(wakeTimeoutMs_);
+  // Poll for the first sample so readiness is observed as soon as it occurs.
+  ok &= wakeAndAwaitData(wakeTimeoutMs_);
   return ok;
 }
 
 bool BMI270::wakeAndEnable(uint8_t sensors) {
-  // PWR_CONF is 0x7C and PWR_CTRL is 0x7D, so both go out in one burst.
-  //
-  // Written separately, a part that re-asserts advanced power save can fall
-  // asleep in the gap between the two transactions, and the enable then
-  // arrives at a sleeping chip and is discarded - PWR_CTRL reads back 0x00
-  // having been given 0x0E, and every sample is zero. Adjacent registers in
-  // one transaction leave no gap to fall asleep in.
-  const uint8_t pair[2] = {0x00, sensors};
-  return bus_.writeRegisters(PWR_CONF, pair, sizeof(pair)) == IMUStatus::Ok;
+  // Bosch requires 450 us after access while advanced power save is active.
+  // PWR_CONF therefore cannot be burst together with PWR_CTRL: the second
+  // byte can arrive before the mode transition has completed and be ignored.
+  if (bus_.writeRegister(PWR_CONF, 0x00) != IMUStatus::Ok) return false;
+  delayMicroseconds(450);
+  if (bus_.writeRegister(PWR_CTRL, sensors) != IMUStatus::Ok) return false;
+  delayMicroseconds(2);
+  return true;
 }
 
 void BMI270::trace(const char* what, uint8_t value) {
@@ -380,97 +280,36 @@ void BMI270::trace(const char* what, uint8_t value) {
 }
 
 bool BMI270::resumeAfterSleep() {
-  // Get it answering again before trying to do anything to it.
-  //
-  // A part that has gone to sleep does not merely return stale registers, it
-  // stops acknowledging altogether: the read that got us here came back as a
-  // bus error, and so did the soft-reset command that followed it. Every
-  // recovery step was failing on its first transaction.
-  //
-  // Reading flat out revives it - the traffic itself is what brings it back -
-  // so spend a moment doing that before anything that matters.
-  bool answering = false;
-  for (uint32_t end = millis() + 100; millis() < end; ) {
-    if (whoAmI() == kChipId) { answering = true; break; }
-  }
-  trace("resume: answering again", answering ? 1 : 0);
-  if (!answering) return false;
-
-  // How much has to be put back depends on how far the part fell.
-  //
-  // INTERNAL_STATUS is the test. If it still reads init_ok the core is running
-  // and only the sensor registers need re-asserting, which is quick. If it has
-  // dropped to not_init the configuration RAM itself is gone - the 8 KB image
-  // is not something PWR_CTRL can restore - and nothing short of the whole
-  // bring-up will bring it back.
   uint8_t internal = 0;
-  const bool coreAlive =
-      bus_.readRegister(INTERNAL_STATUS, internal) == IMUStatus::Ok &&
-      (internal & 0x0Fu) == INTERNAL_STATUS_INIT_OK;
+  bool coreAlive = whoAmI() == kChipId;
+  if (coreAlive) {
+    coreAlive = bus_.writeRegister(PWR_CONF, 0x00) == IMUStatus::Ok &&
+                bus_.readRegister(INTERNAL_STATUS, internal) == IMUStatus::Ok &&
+                (internal & 0x0Fu) == INTERNAL_STATUS_INIT_OK;
+  }
   trace("resume: INTERNAL_STATUS", internal);
 
   if (!coreAlive) {
-    // Soft reset first. Section 4.4 is explicit that writing
-    // INIT_CTRL.init_ctrl = 0x01 "must not be performed more than once after
-    // POR or soft reset", so a second upload without a reset in front of it
-    // is simply ignored - which is exactly what happened when this was tried
-    // the other way round.
-    //
-    // A full re-bring-up costs around 600 ms, which is far too slow to be
-    // doing per sample; but stale or absent data is worse, and a part that
-    // holds its configuration never comes down this path at all.
     const bool didReset = reset();
     trace("resume: soft reset ok", didReset ? 1 : 0);
     if (!didReset) return false;
     const bool uploaded = uploadConfiguration();
     trace("resume: upload ok", uploaded ? 1 : 0);
     if (!uploaded) return false;
-    // Deliberately not configureDefaults(). That routes through the public
-    // setters, which read-modify-write ACC_CONF and GYR_CONF - and a part that
-    // has only just been re-initialised can lose its registers between the
-    // read and the write, so the whole call reports failure and update()
-    // returns nothing even though the core came up perfectly. Write the cached
-    // configuration straight out instead, which is what recovering by hand
-    // does and what was measured working five times out of five.
   }
 
-  // Both bursts are adjacent-register writes - ACC_CONF through GYR_RANGE at
-  // 0x40..0x43, then PWR_CONF and PWR_CTRL at 0x7C..0x7D - so neither can be
-  // split by the part falling asleep half way through.
-  //
-  // The cached values are used rather than reading the registers first,
-  // because reading a part that has lost its configuration just returns the
-  // reset defaults and would configure it to those.
   const uint8_t conf[4] = {accConf_, accRange_, gyrConf_, gyrRange_};
   trace("resume: writing ACC_CONF", accConf_);
-  bus_.writeRegisters(ACC_CONF, conf, sizeof(conf));
-  wakeAndEnable(PWR_ACC_EN | PWR_GYR_EN | PWR_TEMP_EN);
-  // Deliberately no tracing between here and the caller's read.
-  //
-  // There was, and it cost an hour: five debug reads with a Serial.println
-  // after each is tens of milliseconds of idle bus, so the part went back to
-  // sleep between a successful recovery and the sample it was recovered for.
-  // The trace reported everything healthy - PWR_CTRL 0x0E, drdy set - and the
-  // sample that followed read zero.
+  if (bus_.writeRegisters(ACC_CONF, conf, sizeof(conf)) != IMUStatus::Ok) {
+    return false;
+  }
   return wakeAndAwaitData(wakeTimeoutMs_);
 }
 
 bool BMI270::wakeAndAwaitData(uint16_t timeoutMs) {
-  // Enable once, then keep the part awake without touching the enables again.
-  //
-  // Rewriting PWR_CTRL on every poll restarts the accelerometer's start-up
-  // each time round, so drdy never gets the ~46 ms it needs to appear and the
-  // loop times out with the sensor perpetually one step from ready. Only
-  // PWR_CONF gets refreshed below, which holds off advanced power save without
-  // disturbing the sensors.
-  //
-  // The refresh is necessary at all because an idle bus is what puts this part
-  // to sleep in the first place - waiting with delay() would undo the wake-up
-  // it is waiting on.
-  const uint8_t pair[2] = {0x00, PWR_ACC_EN | PWR_GYR_EN | PWR_TEMP_EN};
-  if (bus_.writeRegisters(PWR_CONF, pair, sizeof(pair)) != IMUStatus::Ok) {
-    return false;
-  }
+  // Enable once. Rewriting PWR_CTRL while polling restarts sensor startup and
+  // can prevent data-ready from ever asserting.
+  if (!wakeAndEnable(PWR_ACC_EN | PWR_GYR_EN | PWR_TEMP_EN)) return false;
 
   for (uint32_t end = millis() + timeoutMs; millis() < end; ) {
     uint8_t status = 0;
@@ -483,7 +322,7 @@ bool BMI270::wakeAndAwaitData(uint16_t timeoutMs) {
         (status & both) == both) {
       return true;
     }
-    bus_.writeRegister(PWR_CONF, 0x00);   // keep-alive, enables untouched
+    delayMicroseconds(100);
   }
   return false;
 }
@@ -497,71 +336,32 @@ bool BMI270::sampleIsDead(const uint8_t* a, const uint8_t* g,
   return true;
 }
 
-bool BMI270::readSampleRegisters(uint8_t* a, uint8_t* g, uint8_t* t) {
-  return bus_.readRegisters(DATA_ACCEL_X_L, a, 6) == IMUStatus::Ok &&
-         bus_.readRegisters(DATA_GYRO_X_L, g, 6) == IMUStatus::Ok &&
-         bus_.readRegisters(DATA_TEMP_L, t, 2) == IMUStatus::Ok;
+bool BMI270::readSampleRegisters(uint8_t* a, uint8_t* g, uint8_t* t,
+                                 uint32_t& sensorTime) {
+  uint8_t time[3];
+  if (bus_.readRegisters(DATA_ACCEL_X_L, a, 6) != IMUStatus::Ok ||
+      bus_.readRegisters(DATA_GYRO_X_L, g, 6) != IMUStatus::Ok ||
+      bus_.readRegisters(SENSOR_TIME_0, time, sizeof(time)) != IMUStatus::Ok ||
+      bus_.readRegisters(DATA_TEMP_L, t, 2) != IMUStatus::Ok) {
+    return false;
+  }
+  sensorTime = static_cast<uint32_t>(time[0]) |
+               (static_cast<uint32_t>(time[1]) << 8) |
+               (static_cast<uint32_t>(time[2]) << 16);
+  return true;
 }
 
 bool BMI270::readRaw(RawSample& out) {
   uint8_t a[6];
   uint8_t g[6];
   uint8_t t[2];
+  uint32_t sensorTime = 0;
 
-  // A part that dozes off between samples fails in two different ways, and
-  // both have to be caught here or update() just returns false for ever.
-  //
-  // It either stops answering altogether - the read comes back as a bus error
-  // - or it answers with every data register at exactly zero, which reads as a
-  // working sensor lying perfectly still. The temperature separates the second
-  // case from a genuinely stationary board: 0x8000 is the BMI270's documented
-  // "no reading" value and a running part never reports it.
-  //
-  // Either way the cure is the same. Wake it, enable the sensors again in the
-  // same transaction, and ask once more. On a sensor that stays awake neither
-  // branch is ever taken, so this costs nothing.
-  // Before trusting a sample, check the part still holds the configuration it
-  // was given.
-  //
-  // The all-zero test below is not enough on its own. A part that has dozed
-  // off does not necessarily return zeros - it can return the last values it
-  // latched, which look entirely plausible: measured, twenty consecutive
-  // reads came back byte-identical at 1.124 g with the gyro at exactly 0.00
-  // and the temperature stuck at 10.8 C, on a board that had not moved. That
-  // passes every sanity check you would think to write, and it is not data.
-  //
-  // PWR_CTRL is the honest witness. A running part holds the enables it was
-  // given; one that has lost its configuration reads back 0x00. Checking it
-  // costs a single register read per sample.
-  const uint8_t wanted = PWR_ACC_EN | PWR_GYR_EN | PWR_TEMP_EN;
-  uint8_t enables = 0;
-  if (bus_.readRegister(PWR_CTRL, enables) != IMUStatus::Ok || enables != wanted) {
-    trace("readRaw: PWR_CTRL was", enables);
-    if (!resumeAfterSleep()) {
-      trace("readRaw: resume failed", 0);
-      return false;
-    }
-  }
-
-  bool got = readSampleRegisters(a, g, t);
-
-  if (!got) {
-    wakeAndEnable(PWR_ACC_EN | PWR_GYR_EN | PWR_TEMP_EN);
-    got = readSampleRegisters(a, g, t);
-    if (!got) return false;
-  }
-
-  if (sampleIsDead(a, g, t)) {
-    // Wake it and wait for real data rather than reading straight back. A part
-    // that has dozed off needs its sensors re-enabled and then time to produce
-    // a sample - 46 ms, measured - and the wait has to keep the bus busy or it
-    // simply goes back to sleep during it.
-    wakeAndAwaitData(wakeTimeoutMs_);
-    if (!readSampleRegisters(a, g, t)) return false;
-
-    // Still nothing. Report the failure rather than handing back a sample of
-    // all zeros and a temperature of -41 C, which reads like a working sensor
-    // lying perfectly still in a freezer.
+  bool got = readSampleRegisters(a, g, t, sensorTime);
+  if (!got || sampleIsDead(a, g, t)) {
+    trace(got ? "sample invalid" : "sample transfer failed", got ? 1 : 0);
+    if (!resumeAfterSleep() ||
+        !readSampleRegisters(a, g, t, sensorTime)) return false;
     if (sampleIsDead(a, g, t)) return false;
   }
   out.ax = le16(&a[0]);
@@ -571,6 +371,8 @@ bool BMI270::readRaw(RawSample& out) {
   out.gy = le16(&g[2]);
   out.gz = le16(&g[4]);
   out.temp = le16(t);
+  out.sensorTime = sensorTime;
+  lastSensorTime_ = sensorTime;
   return true;
 }
 
