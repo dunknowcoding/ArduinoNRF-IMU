@@ -210,7 +210,25 @@ bool BMI270::uploadConfiguration() {
   if (bus_.writeRegister(INIT_CTRL, 0x01) != IMUStatus::Ok) {
     return false;
   }
-  delay(150);
+
+  // Hold advanced power save off while the core starts, instead of simply
+  // waiting out the initialisation window.
+  //
+  // The datasheet has you clear PWR_CONF once before the upload and assumes it
+  // stays clear. On some parts it does not: advanced power save comes back
+  // during the 150 ms the core needs, the part drops into suspend before it
+  // has finished, and INTERNAL_STATUS sits at not_init for ever afterwards.
+  //
+  // Measured three times each on a part that behaved this way: clearing it
+  // once and waiting reached init_ok 0 times out of 3, and so did rewriting it
+  // before every chunk of the upload - the upload was never the problem.
+  // Holding it down across this window reached init_ok 3 times out of 3.
+  //
+  // On a part that does not need it this rewrites a register with the value it
+  // already holds, which costs a few hundred microseconds and changes nothing.
+  for (uint32_t until = millis() + 150; millis() < until; ) {
+    bus_.writeRegister(PWR_CONF, 0x00);
+  }
   if (!configurationLoaded()) {
     lastStage_ = Stage::ConfigNotLoaded;
     return false;
@@ -316,19 +334,99 @@ bool BMI270::configureDefaults() {
   ok &= setGyroRangeDps(gyroRangeDps_);
   ok &= setSampleRateHz(sampleRateHz_);
   ok &= setLowPassFilterHz(50);
-  ok &= bus_.writeRegister(PWR_CTRL, PWR_ACC_EN | PWR_GYR_EN) == IMUStatus::Ok;
+  ok &= wakeAndEnable(PWR_ACC_EN | PWR_GYR_EN | PWR_TEMP_EN);
   delay(80);
   return ok;
+}
+
+bool BMI270::wakeAndEnable(uint8_t sensors) {
+  // PWR_CONF is 0x7C and PWR_CTRL is 0x7D, so both go out in one burst.
+  //
+  // Written separately, a part that re-asserts advanced power save can fall
+  // asleep in the gap between the two transactions, and the enable then
+  // arrives at a sleeping chip and is discarded - PWR_CTRL reads back 0x00
+  // having been given 0x0E, and every sample is zero. Adjacent registers in
+  // one transaction leave no gap to fall asleep in.
+  const uint8_t pair[2] = {0x00, sensors};
+  return bus_.writeRegisters(PWR_CONF, pair, sizeof(pair)) == IMUStatus::Ok;
+}
+
+void BMI270::holdAwake(uint16_t ms) {
+  // Keep the part out of suspend by writing continuously, re-asserting both
+  // the power state and the sensor configuration - a part that has been asleep
+  // has lost the configuration too, so waking it without restoring the output
+  // data rate and ranges gives you a running sensor set to something else.
+  //
+  // The two bursts are adjacent-register writes so neither can be split by the
+  // part falling asleep half way through.
+  uint8_t conf[4];
+  conf[0] = accConf_;
+  conf[1] = accRange_;
+  conf[2] = gyrConf_;
+  conf[3] = gyrRange_;
+  for (uint32_t until = millis() + ms; millis() < until; ) {
+    wakeAndEnable(PWR_ACC_EN | PWR_GYR_EN | PWR_TEMP_EN);
+    bus_.writeRegisters(ACC_CONF, conf, sizeof(conf));
+  }
+}
+
+// A sample from a part that is not actually running: every data register
+// exactly zero, and the temperature at 0x8000, which is the BMI270's
+// documented "no reading" value. A running sensor never reports it, so the
+// pair together cannot be mistaken for a genuinely stationary board.
+bool BMI270::sampleIsDead(const uint8_t* a, const uint8_t* g,
+                          const uint8_t* t) {
+  if (!(t[0] == 0x00 && t[1] == 0x80)) return false;
+  for (uint8_t i = 0; i < 6; ++i) {
+    if (a[i] != 0 || g[i] != 0) return false;
+  }
+  return true;
+}
+
+bool BMI270::readSampleRegisters(uint8_t* a, uint8_t* g, uint8_t* t) {
+  return bus_.readRegisters(DATA_ACCEL_X_L, a, 6) == IMUStatus::Ok &&
+         bus_.readRegisters(DATA_GYRO_X_L, g, 6) == IMUStatus::Ok &&
+         bus_.readRegisters(DATA_TEMP_L, t, 2) == IMUStatus::Ok;
 }
 
 bool BMI270::readRaw(RawSample& out) {
   uint8_t a[6];
   uint8_t g[6];
   uint8_t t[2];
-  if (bus_.readRegisters(DATA_ACCEL_X_L, a, sizeof(a)) != IMUStatus::Ok ||
-      bus_.readRegisters(DATA_GYRO_X_L, g, sizeof(g)) != IMUStatus::Ok ||
-      bus_.readRegisters(DATA_TEMP_L, t, sizeof(t)) != IMUStatus::Ok) {
-    return false;
+
+  // A part that dozes off between samples fails in two different ways, and
+  // both have to be caught here or update() just returns false for ever.
+  //
+  // It either stops answering altogether - the read comes back as a bus error
+  // - or it answers with every data register at exactly zero, which reads as a
+  // working sensor lying perfectly still. The temperature separates the second
+  // case from a genuinely stationary board: 0x8000 is the BMI270's documented
+  // "no reading" value and a running part never reports it.
+  //
+  // Either way the cure is the same. Wake it, enable the sensors again in the
+  // same transaction, and ask once more. On a sensor that stays awake neither
+  // branch is ever taken, so this costs nothing.
+  if (keepAwakeMs_ != 0) holdAwake(keepAwakeMs_);
+
+  bool got = readSampleRegisters(a, g, t);
+
+  if (!got) {
+    wakeAndEnable(PWR_ACC_EN | PWR_GYR_EN | PWR_TEMP_EN);
+    got = readSampleRegisters(a, g, t);
+    if (!got) return false;
+  }
+
+  if (sampleIsDead(a, g, t)) {
+    // One write is not enough to produce a sample: the accelerometer has to
+    // actually run for a while at its output data rate before there is
+    // anything to read. Give it that time if the caller has allowed it.
+    holdAwake(keepAwakeMs_ != 0 ? keepAwakeMs_ : 25);
+    if (!readSampleRegisters(a, g, t)) return false;
+
+    // Still nothing. Report the failure rather than handing back a sample of
+    // all zeros and a temperature of -41 C, which reads like a working sensor
+    // lying perfectly still in a freezer.
+    if (sampleIsDead(a, g, t)) return false;
   }
   out.ax = le16(&a[0]);
   out.ay = le16(&a[2]);
@@ -370,6 +468,7 @@ bool BMI270::setAccelRangeG(uint16_t maxG) {
   } else {
     range = 0x03; accelLsbPerG_ = 2048.0f; accelRangeG_ = 16;
   }
+  accRange_ = range;
   return bus_.writeRegister(ACC_RANGE, range) == IMUStatus::Ok;
 }
 
@@ -386,6 +485,7 @@ bool BMI270::setGyroRangeDps(uint16_t maxDps) {
   } else {
     range = 0x00; gyroLsbPerDps_ = 16.384f; gyroRangeDps_ = 2000;
   }
+  gyrRange_ = range;
   return bus_.writeRegister(GYR_RANGE, range) == IMUStatus::Ok;
 }
 
@@ -414,9 +514,16 @@ bool BMI270::setSampleRateHz(uint16_t hz) {
   accelOdr_ = odrCodeForHz(hz, actualAccel, false);
   gyroOdr_ = odrCodeForHz(hz, actualGyro, true);
   sampleRateHz_ = actualAccel;
+  // Write these outright instead of read-modify-write. A part that has dozed
+  // off answers the read with its reset default, so updateRegister() quietly
+  // rebuilds the register from the wrong base. The top nibble is the filter
+  // and performance configuration this driver always uses, so there is nothing
+  // in there worth preserving from a read.
+  accConf_ = static_cast<uint8_t>(0xA0u | (accelOdr_ & 0x0Fu));
+  gyrConf_ = static_cast<uint8_t>(0xA0u | (gyroOdr_ & 0x0Fu));
   bool ok = true;
-  ok &= bus_.updateRegister(ACC_CONF, 0x0F, accelOdr_) == IMUStatus::Ok;
-  ok &= bus_.updateRegister(GYR_CONF, 0x0F, gyroOdr_) == IMUStatus::Ok;
+  ok &= bus_.writeRegister(ACC_CONF, accConf_) == IMUStatus::Ok;
+  ok &= bus_.writeRegister(GYR_CONF, gyrConf_) == IMUStatus::Ok;
   return ok;
 }
 

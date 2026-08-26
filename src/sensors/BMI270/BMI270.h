@@ -84,6 +84,21 @@ class BMI270 : public IMUSensor {
   // keeps it; an unpowered one cannot.
   bool supplyNotConnected() const { return supplyNotConnected_; }
 
+  // Keep the part out of suspend for this many milliseconds before each
+  // sample. Zero, the default, means do nothing.
+  //
+  // Only useful on a module that will not stay awake by itself - one where
+  // supplyNotConnected() is true. Such a part loses its whole configuration
+  // whenever the bus goes quiet, and a single wake-up write is not enough to
+  // get a reading out of it: the accelerometer has to actually run at its
+  // output data rate for a while before there is a sample to read.
+  //
+  // This is a workaround, not a fix, and an expensive one - it monopolises the
+  // I2C bus for the whole interval, once per sample. Leave it off unless the
+  // driver has told you the part is not being supplied properly.
+  void setKeepAwakeMs(uint16_t ms) { keepAwakeMs_ = ms; }
+  uint16_t keepAwakeMs() const { return keepAwakeMs_; }
+
   // The BMI270's step counter, gesture and motion detectors all run on its
   // internal core, so none of them exist until a configuration image has been
   // loaded - see setConfigImage(). There is no API for them here because there
@@ -119,11 +134,32 @@ class BMI270 : public IMUSensor {
   Stage lastStage_ = Stage::None;
   bool porDuringInit_ = false;
   bool supplyNotConnected_ = false;
+  uint16_t keepAwakeMs_ = 0;
+  uint8_t accConf_ = 0xA8;    // 100 Hz, normal filter - the reset default
+  uint8_t accRange_ = 0x02;   // +/- 8 g
+  uint8_t gyrConf_ = 0xA9;    // 200 Hz
+  uint8_t gyrRange_ = 0x00;   // +/- 2000 dps
   uint8_t lastInternalStatus_ = 0xFF;
 
   // Writes a register, lets the bus go quiet, and reads it back. False when
   // the value did not survive, which means the die is not being supplied.
   bool holdsStateAcrossIdleBus();
+
+  // Clears advanced power save and enables the given sensors in a single
+  // transaction, so nothing can fall asleep between the two writes.
+  bool wakeAndEnable(uint8_t sensors);
+
+  // Writes continuously for ms milliseconds so the part cannot suspend,
+  // re-asserting the sensor configuration as well as the power state.
+  void holdAwake(uint16_t ms);
+
+  // Reads the accelerometer, gyroscope and temperature registers in one go.
+  bool readSampleRegisters(uint8_t* a, uint8_t* g, uint8_t* t);
+
+  // True when a sample is the all-zero, invalid-temperature signature of a
+  // part that is not running.
+  static bool sampleIsDead(const uint8_t* a, const uint8_t* g,
+                           const uint8_t* t);
   const uint8_t* configImage_ = nullptr;
   size_t configImageLength_ = 0;
   bool configureDefaults();

@@ -50,6 +50,9 @@ constexpr uint8_t ERR_FATAL = 0x01;
 constexpr uint8_t EVENT = 0x1B;
 constexpr uint8_t EVENT_POR_DETECTED = 0x01;
 constexpr uint8_t PWR_ACC_EN = 0x04;
+// PWR_CTRL bit 3. Without it DATA_TEMP reads 0x8000, the "no reading" value,
+// which this driver was then reporting as -41 C.
+constexpr uint8_t PWR_TEMP_EN = 0x08;
 constexpr uint8_t INTERNAL_STATUS_INIT_OK = 0x01;
 
 constexpr uint8_t PERF_MODE = 0x80;
