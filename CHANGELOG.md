@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.4.1
+
+Reliable BMI270 and BNO08x operation on shared and recovery-sensitive I2C
+buses.
+
+- BMI270 now bundles Bosch Sensortec's standard configuration image with its
+  license, performs bounded initialization and recovery, reports exact status,
+  and exposes the advanced feature controls through the public driver.
+- BNO085/BNO086 transport now follows bounded SHTP framing and continuation
+  rules, distinguishes an ordinary no-report poll from a transport error, and
+  exposes additional fusion, motion, event, calibration, and diagnostic data.
+- Common I2C recovery preserves caller-selected pins and clock settings and no
+  longer tears down a healthy shared bus.
+- MPU6050 accepts known register-compatible clone identities without weakening
+  the normal identity check.
+
 ## 0.4.0
 
 Cross-MCU portability: the sensor and bus layers now build on every major
