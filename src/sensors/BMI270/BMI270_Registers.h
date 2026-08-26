@@ -31,6 +31,18 @@ constexpr uint8_t INIT_CTRL = 0x59;
 constexpr uint8_t INIT_ADDR_0 = 0x5B;
 constexpr uint8_t INIT_ADDR_1 = 0x5C;
 constexpr uint8_t INIT_DATA = 0x5E;
+// NV_CONF is deliberately not defined here, and this driver never writes it.
+//
+// Bit 0 is spi_en. Setting it disables the I2C interface until the next power
+// cycle - a soft reset will not bring it back - so a single stray write to
+// 0x70 bricks the part for the rest of the session. Bosch issue #26 on
+// BMI270_SensorAPI is exactly this: "BMI270 Initialization Causes I2C NACK
+// After Writing to Register 0x70". The other bits there are the I2C watchdog
+// and the accelerometer offset enable, none of which this driver needs.
+//
+// If you ever add NV_CONF support, read the register first and preserve
+// spi_en, and never burst-write across 0x70.
+
 constexpr uint8_t PWR_CONF = 0x7C;
 constexpr uint8_t PWR_CTRL = 0x7D;
 constexpr uint8_t CMD = 0x7E;

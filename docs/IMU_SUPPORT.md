@@ -691,6 +691,27 @@ to hold up the core". Treat `supplyNotConnected()` as the answer and
 If the supply checks out and the part still says `not_init`, only then consider
 a bad image or a counterfeit die.
 
+### Known problems in Bosch's own driver
+
+NiusIMU does not use Bosch's `BMI270_SensorAPI` source, but it targets the same
+silicon, so the defects reported against it are worth checking against. Audited
+2026-08-23 against that repository's issue tracker.
+
+| Bosch issue | The problem | Where NiusIMU stands |
+| --- | --- | --- |
+| [#7](https://github.com/boschsensortec/BMI270_SensorAPI/issues/7), [#18](https://github.com/boschsensortec/BMI270_SensorAPI/issues/18) | The datasheet's "at most 20 msec" wait after `INIT_CTRL=1` is not always enough; removing the wait breaks init outright | Polls `INTERNAL_STATUS` to a **1 s** deadline instead of waiting a fixed time |
+| [#9](https://github.com/boschsensortec/BMI270_SensorAPI/issues/9) | `bmi2_write_config_file` checked the load status incorrectly | Checks the low nibble only, `(status & 0x0F) == 0x01`, which is what the message field actually is |
+| [#26](https://github.com/boschsensortec/BMI270_SensorAPI/issues/26) | Writing `NV_CONF` (0x70) leaves every later I2C transfer NACKed | Never writes 0x70. Bit 0 there is `spi_en`, and setting it kills I2C until a power cycle — a soft reset will not undo it |
+| [#16](https://github.com/boschsensortec/BMI270_SensorAPI/issues/16) | Read-modify-write on `INT1_IO_CTRL`/`INT2_IO_CTRL` reads back zeros, so the value written is built on a base that was never read | No read-modify-write anywhere in the configuration path. `ACC_CONF`, `GYR_CONF` and `INT_MAP_DATA` are tracked in the driver and written outright |
+| [#23](https://github.com/boschsensortec/BMI270_SensorAPI/issues/23) | An RTOS `osDelay()` in place of a busy wait makes init fail | Nothing here depends on delay accuracy; every wait is a poll with a deadline |
+| [#21](https://github.com/boschsensortec/BMI270_SensorAPI/issues/21) | FIFO reads ignore the configured maximum transfer length | Bursts are chunked to the `TwoWire` buffer and re-addressed per chunk |
+| [#24](https://github.com/boschsensortec/BMI270_SensorAPI/pull/24), [#29](https://github.com/boschsensortec/BMI270_SensorAPI/issues/29) | Proposal to skip the soft reset when re-initialising after a wake-up, to save the 8 kB re-upload | **Do not.** Measured here: re-uploading without a soft reset first reports `init_ok` and then returns nonsense — 2.268 g where the correct reading was 1.011. Section 4.4 is explicit that `INIT_CTRL=0x01` "must not be performed more than once after POR or soft reset" |
+
+The FIFO extraction defects ([#4](https://github.com/boschsensortec/BMI270_SensorAPI/issues/4),
+[#12](https://github.com/boschsensortec/BMI270_SensorAPI/pull/12),
+[#15](https://github.com/boschsensortec/BMI270_SensorAPI/issues/15)) do not
+apply: NiusIMU reads the data registers directly rather than through the FIFO.
+
 ### Supplying it
 
 ```cpp

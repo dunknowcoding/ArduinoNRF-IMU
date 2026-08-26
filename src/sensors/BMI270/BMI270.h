@@ -143,6 +143,7 @@ class BMI270 : public IMUSensor {
   uint8_t accRange_ = 0x02;   // +/- 8 g
   uint8_t gyrConf_ = 0xA9;    // 200 Hz
   uint8_t gyrRange_ = 0x00;   // +/- 2000 dps
+  uint8_t intMapData_ = 0x00; // what routeDataReadyInterrupt() has mapped
   uint8_t lastInternalStatus_ = 0xFF;
 
   // Writes a register, lets the bus go quiet, and reads it back. False when

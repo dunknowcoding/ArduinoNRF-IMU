@@ -251,7 +251,16 @@ bool BMI270::configurationLoaded() {
   // its own time after INIT_CTRL is set.
   porDuringInit_ = false;
   supplyNotConnected_ = false;
-  const uint32_t deadline = millis() + 400;
+
+  // One second, not the datasheet's "at most 20 msec".
+  //
+  // Bosch's own API carried a 20 ms wait here and had to change it: issue #7
+  // on BMI270_SensorAPI, "20ms not enough until asic initialized", replaced it
+  // with a retry loop and a one-second timeout, and issue #18 reports the same
+  // failure from the wait being dropped altogether. Parts exist that need far
+  // longer than the datasheet figure, and the cost of waiting is only paid by
+  // a part that was going to fail anyway.
+  const uint32_t deadline = millis() + 1000;
   for (;;) {
     uint8_t status = 0;
     if (bus_.readRegister(INTERNAL_STATUS, status) == IMUStatus::Ok) {
@@ -656,9 +665,22 @@ bool BMI270::setSampleRateHz(uint16_t hz) {
 
 bool BMI270::setLowPassFilterHz(uint16_t hz) {
   (void)hz;
+  // Write outright rather than read-modify-write.
+  //
+  // Bosch issue #16 is this same hazard on a different pair of registers:
+  // a read-modify-write on INT1_IO_CTRL/INT2_IO_CTRL "returns zeros", so the
+  // value written is built from a base that was never really read. Here the
+  // part can be asleep, which has exactly the same effect - the read yields
+  // the reset default and the performance bit gets written on top of that,
+  // silently discarding the output data rate configured a moment earlier.
+  //
+  // The cached values are the truth about what this driver has configured, so
+  // set the bit in them and write the whole register.
+  accConf_ |= PERF_MODE;
+  gyrConf_ |= PERF_MODE;
   bool ok = true;
-  ok &= bus_.updateRegister(ACC_CONF, PERF_MODE, PERF_MODE) == IMUStatus::Ok;
-  ok &= bus_.updateRegister(GYR_CONF, PERF_MODE, PERF_MODE) == IMUStatus::Ok;
+  ok &= bus_.writeRegister(ACC_CONF, accConf_) == IMUStatus::Ok;
+  ok &= bus_.writeRegister(GYR_CONF, gyrConf_) == IMUStatus::Ok;
   return ok;
 }
 
@@ -685,9 +707,13 @@ bool BMI270::configureInterruptPin(uint8_t pin, bool activeHigh,
 
 bool BMI270::routeDataReadyInterrupt(uint8_t pin, bool enable) {
   if (pin != 1 && pin != 2) return false;
-  uint8_t mask = pin == 1 ? 0x04 : 0x40;
-  return bus_.updateRegister(INT_MAP_DATA, mask, enable ? mask : 0) ==
-         IMUStatus::Ok;
+  const uint8_t mask = pin == 1 ? 0x04 : 0x40;
+  // Track the mapping here rather than reading it back, for the reason given
+  // in setLowPassFilterHz: a read-modify-write on a part that has dozed off
+  // rebuilds the register from its reset default and quietly unmaps whatever
+  // was routed to the other pin.
+  intMapData_ = static_cast<uint8_t>((intMapData_ & ~mask) | (enable ? mask : 0));
+  return bus_.writeRegister(INT_MAP_DATA, intMapData_) == IMUStatus::Ok;
 }
 
 void BMI270::setBusClockHz(uint32_t hz) {
