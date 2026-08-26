@@ -721,4 +721,312 @@ void BMI270::setBusClockHz(uint32_t hz) {
   bus_.setClockHz(hz);
 }
 
+
+// ---------------------------------------------------------------------------
+// Advanced features
+// ---------------------------------------------------------------------------
+
+bool BMI270::readFeaturePage(uint8_t page, uint8_t* out) {
+  if (bus_.writeRegister(FEAT_PAGE, page) != IMUStatus::Ok) return false;
+  return bus_.readRegisters(FEATURES, out, FEATURES_SIZE) == IMUStatus::Ok;
+}
+
+bool BMI270::writeFeaturePage(uint8_t page, const uint8_t* in) {
+  if (bus_.writeRegister(FEAT_PAGE, page) != IMUStatus::Ok) return false;
+  // The whole page goes back in one transfer. Section 4.8.1 requires feature
+  // writes to be 16-bit word aligned; writing all sixteen bytes from an even
+  // start satisfies that without the caller having to think about it.
+  return bus_.writeRegisters(FEATURES, in, FEATURES_SIZE) == IMUStatus::Ok;
+}
+
+bool BMI270::setFeatureBit(uint8_t page, uint8_t index, uint8_t mask,
+                           bool enable) {
+  if (index >= FEATURES_SIZE) return false;
+  uint8_t buffer[FEATURES_SIZE];
+  if (!readFeaturePage(page, buffer)) return false;
+  if (enable) {
+    buffer[index] |= mask;
+  } else {
+    buffer[index] &= static_cast<uint8_t>(~mask);
+  }
+  return writeFeaturePage(page, buffer);
+}
+
+bool BMI270::enableFeature(Feature feature, bool enable) {
+  // Nothing here exists without the core running, and silently doing nothing
+  // would be worse than saying so.
+  if ((lastInternalStatus_ & 0x0Fu) != INTERNAL_STATUS_INIT_OK) return false;
+
+  switch (feature) {
+    case Feature::AnyMotion:
+      return setFeatureBit(PAGE_ANY_MOTION, OFF_ANY_MOTION + EN_OFF_ANY_NO_MOTION,
+                           EN_MASK_ANY_NO_MOTION, enable);
+    case Feature::NoMotion:
+      return setFeatureBit(PAGE_NO_MOTION, OFF_NO_MOTION + EN_OFF_ANY_NO_MOTION,
+                           EN_MASK_ANY_NO_MOTION, enable);
+    case Feature::SignificantMotion:
+      return setFeatureBit(PAGE_SIG_MOTION, OFF_SIG_MOTION + EN_OFF_SIG_MOTION,
+                           EN_MASK_SIG_MOTION, enable);
+    case Feature::StepDetector:
+      return setFeatureBit(PAGE_STEP_CONF, OFF_STEP_CONF + EN_OFF_STEP,
+                           EN_MASK_STEP_DETECTOR, enable);
+    case Feature::StepCounter:
+      return setFeatureBit(PAGE_STEP_CONF, OFF_STEP_CONF + EN_OFF_STEP,
+                           EN_MASK_STEP_COUNTER, enable);
+    case Feature::StepActivity:
+      return setFeatureBit(PAGE_STEP_CONF, OFF_STEP_CONF + EN_OFF_STEP,
+                           EN_MASK_STEP_ACTIVITY, enable);
+    case Feature::WristGesture:
+      return setFeatureBit(PAGE_WRIST_GESTURE, OFF_WRIST_GESTURE + EN_OFF_STEP,
+                           EN_MASK_WRIST_GESTURE, enable);
+    case Feature::WristWearWakeup:
+      return setFeatureBit(PAGE_WRIST_WEAR, OFF_WRIST_WEAR + EN_OFF_STEP,
+                           EN_MASK_WRIST_WEAR, enable);
+  }
+  return false;
+}
+
+uint32_t BMI270::stepCount() {
+  uint8_t buffer[FEATURES_SIZE];
+  if (!readFeaturePage(PAGE_FEATURE_OUT, buffer)) return 0;
+  const uint8_t* p = &buffer[OFF_STEP_COUNT_OUT];
+  return static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) |
+         (static_cast<uint32_t>(p[2]) << 16) | (static_cast<uint32_t>(p[3]) << 24);
+}
+
+bool BMI270::resetStepCount() {
+  // The reset is a bit in the step counter's own configuration word, and it is
+  // self-clearing: set it, write the page back, and the core zeroes the count.
+  uint8_t buffer[FEATURES_SIZE];
+  if (!readFeaturePage(PAGE_STEP_CONF, buffer)) return false;
+  const uint8_t high = OFF_STEP_CONF + 1;
+  if (high >= FEATURES_SIZE) return false;
+  buffer[high] |= static_cast<uint8_t>(STEP_COUNT_RST_MASK >> 8);
+  return writeFeaturePage(PAGE_STEP_CONF, buffer);
+}
+
+BMI270::Activity BMI270::stepActivity() {
+  uint8_t buffer[FEATURES_SIZE];
+  if (!readFeaturePage(PAGE_FEATURE_OUT, buffer)) return Activity::Unknown;
+  const uint8_t value = buffer[OFF_STEP_ACT_OUT] & 0x03u;
+  return static_cast<Activity>(value);
+}
+
+bool BMI270::configureMotion(uint8_t page, uint8_t offset, uint16_t thresholdMg,
+                             uint16_t durationMs, bool x, bool y, bool z) {
+  if ((lastInternalStatus_ & 0x0Fu) != INTERNAL_STATUS_INIT_OK) return false;
+  if (static_cast<uint16_t>(offset) + 4u > FEATURES_SIZE) return false;
+
+  uint8_t buffer[FEATURES_SIZE];
+  if (!readFeaturePage(page, buffer)) return false;
+
+  // Duration counts 20 ms steps, 13 bits of them.
+  uint32_t duration = durationMs / 20u;
+  if (duration > ANY_NO_MOT_DUR_MASK) duration = ANY_NO_MOT_DUR_MASK;
+
+  // Threshold is 5.11 format - one count is 1/2048 g, so 1 mg is 2.048 counts.
+  uint32_t threshold = (static_cast<uint32_t>(thresholdMg) * 2048u) / 1000u;
+  if (threshold > ANY_NO_MOT_THRES_MASK) threshold = ANY_NO_MOT_THRES_MASK;
+
+  uint16_t word0 = static_cast<uint16_t>(duration);
+  if (x) word0 |= ANY_NO_MOT_X_SEL;
+  if (y) word0 |= ANY_NO_MOT_Y_SEL;
+  if (z) word0 |= ANY_NO_MOT_Z_SEL;
+
+  // Preserve the enable bit, which lives in the top of the threshold word, so
+  // that configuring a detector does not silently switch it off again.
+  const uint16_t existing =
+      static_cast<uint16_t>(buffer[offset + 2]) |
+      (static_cast<uint16_t>(buffer[offset + 3]) << 8);
+  const uint16_t word1 = static_cast<uint16_t>(threshold) |
+                         static_cast<uint16_t>(existing & 0xF800u);
+
+  buffer[offset + 0] = static_cast<uint8_t>(word0 & 0xFFu);
+  buffer[offset + 1] = static_cast<uint8_t>(word0 >> 8);
+  buffer[offset + 2] = static_cast<uint8_t>(word1 & 0xFFu);
+  buffer[offset + 3] = static_cast<uint8_t>(word1 >> 8);
+  return writeFeaturePage(page, buffer);
+}
+
+bool BMI270::configureAnyMotion(uint16_t thresholdMg, uint16_t durationMs,
+                                bool x, bool y, bool z) {
+  return configureMotion(PAGE_ANY_MOTION, OFF_ANY_MOTION, thresholdMg,
+                         durationMs, x, y, z);
+}
+
+bool BMI270::configureNoMotion(uint16_t thresholdMg, uint16_t durationMs,
+                               bool x, bool y, bool z) {
+  return configureMotion(PAGE_NO_MOTION, OFF_NO_MOTION, thresholdMg, durationMs,
+                         x, y, z);
+}
+
+uint8_t BMI270::featureInterrupts() {
+  uint8_t status = 0;
+  if (bus_.readRegister(INT_STATUS_0, status) != IMUStatus::Ok) return 0;
+  return status;
+}
+
+bool BMI270::mapFeatureInterrupt(uint8_t pin, uint8_t mask) {
+  if (pin != 1 && pin != 2) return false;
+  const uint8_t reg = (pin == 1) ? INT1_MAP_FEAT : INT2_MAP_FEAT;
+  return bus_.writeRegister(reg, mask) == IMUStatus::Ok;
+}
+
+bool BMI270::configureFifo(bool accel, bool gyro, bool headerMode) {
+  uint8_t config = 0;
+  if (accel) config |= FIFO_CONF1_ACC_EN;
+  if (gyro) config |= FIFO_CONF1_GYR_EN;
+  if (headerMode) config |= FIFO_CONF1_HEADER_EN;
+  return bus_.writeRegister(FIFO_CONFIG_1, config) == IMUStatus::Ok;
+}
+
+uint16_t BMI270::fifoLength() {
+  uint8_t raw[2] = {0, 0};
+  if (bus_.readRegisters(FIFO_LENGTH_0, raw, sizeof(raw)) != IMUStatus::Ok) {
+    return 0;
+  }
+  // Fourteen bits; the top two of the high byte are reserved.
+  return static_cast<uint16_t>(raw[0]) |
+         (static_cast<uint16_t>(raw[1] & 0x3Fu) << 8);
+}
+
+uint16_t BMI270::readFifo(uint8_t* out, uint16_t maxBytes) {
+  if (out == nullptr || maxBytes == 0) return 0;
+  uint16_t available = fifoLength();
+  if (available == 0) return 0;
+  if (available > maxBytes) available = maxBytes;
+  if (bus_.readRegisters(FIFO_DATA, out, available) != IMUStatus::Ok) return 0;
+  return available;
+}
+
+bool BMI270::flushFifo() {
+  return bus_.writeRegister(CMD, CMD_FIFO_FLUSH) == IMUStatus::Ok;
+}
+
+bool BMI270::setAccelOffset(int8_t x, int8_t y, int8_t z, bool enable) {
+  const uint8_t offsets[3] = {static_cast<uint8_t>(x), static_cast<uint8_t>(y),
+                              static_cast<uint8_t>(z)};
+  if (bus_.writeRegisters(OFFSET_ACC_X, offsets, sizeof(offsets)) !=
+      IMUStatus::Ok) {
+    return false;
+  }
+  // acc_off_en lives in NV_CONF alongside the interface settings, so this has
+  // to be a read-modify-write - clobbering spi_en here would take the part off
+  // the bus entirely.
+  uint8_t nv = 0;
+  if (bus_.readRegister(NV_CONF, nv) != IMUStatus::Ok) return false;
+  if (enable) {
+    nv |= NV_ACC_OFF_EN;
+  } else {
+    nv &= static_cast<uint8_t>(~NV_ACC_OFF_EN);
+  }
+  return bus_.writeRegister(NV_CONF, nv) == IMUStatus::Ok;
+}
+
+bool BMI270::setGyroOffset(int16_t x, int16_t y, int16_t z, bool enable) {
+  // Ten bits per axis: the low eight in their own register, the top two packed
+  // into OFFSET_6 together with the enable bit.
+  const uint8_t low[3] = {static_cast<uint8_t>(x & 0xFF),
+                          static_cast<uint8_t>(y & 0xFF),
+                          static_cast<uint8_t>(z & 0xFF)};
+  if (bus_.writeRegisters(OFFSET_GYR_X, low, sizeof(low)) != IMUStatus::Ok) {
+    return false;
+  }
+
+  uint8_t high = 0;
+  if (bus_.readRegister(OFFSET_6, high) != IMUStatus::Ok) return false;
+  high &= 0xC0u;   // keep gyr_gain_en and gyr_off_en, clear the packed bits
+  high |= static_cast<uint8_t>((x >> 8) & 0x03u);
+  high |= static_cast<uint8_t>(((y >> 8) & 0x03u) << 2);
+  high |= static_cast<uint8_t>(((z >> 8) & 0x03u) << 4);
+  if (enable) {
+    high |= OFFSET6_GYR_OFF_EN;
+  } else {
+    high &= static_cast<uint8_t>(~OFFSET6_GYR_OFF_EN);
+  }
+  return bus_.writeRegister(OFFSET_6, high) == IMUStatus::Ok;
+}
+
+bool BMI270::selfTestAccel() {
+  // Run at +/-16 g in performance mode, drive the internal test signal
+  // positive then negative, and check the deflection on each axis clears the
+  // datasheet's minimum. The board has to be still while this runs.
+  const uint8_t savedRange = accRange_;
+  bool ok = true;
+  ok &= bus_.writeRegister(ACC_CONF, 0xA7) == IMUStatus::Ok;   // 1600 Hz, perf
+  ok &= bus_.writeRegister(ACC_RANGE, 0x03) == IMUStatus::Ok;  // +/- 16 g
+  ok &= wakeAndEnable(PWR_ACC_EN);
+  if (!ok) return false;
+  delay(2);
+
+  int16_t positive[3] = {0, 0, 0};
+  int16_t negative[3] = {0, 0, 0};
+  for (uint8_t phase = 0; phase < 2; ++phase) {
+    // acc_self_test_en, with the sign chosen by the phase.
+    const uint8_t sign = (phase == 0) ? 0x04 : 0x00;
+    if (bus_.writeRegister(ACC_SELF_TEST, static_cast<uint8_t>(0x01 | sign)) !=
+        IMUStatus::Ok) {
+      ok = false;
+      break;
+    }
+    // The datasheet asks for at least 50 ms to settle - but waiting with
+    // delay() puts a part that does not hold state across an idle bus straight
+    // back to sleep, and the self-test then measures a sensor that is not
+    // running. That is why this reported a failure on a part whose readings
+    // were otherwise perfect. Poll instead, which settles and keeps it awake.
+    for (uint32_t end = millis() + 60; millis() < end; ) {
+      uint8_t ignored = 0;
+      bus_.readRegister(STATUS, ignored);
+    }
+    uint8_t raw[6] = {0};
+    if (bus_.readRegisters(DATA_ACCEL_X_L, raw, sizeof(raw)) != IMUStatus::Ok) {
+      ok = false;
+      break;
+    }
+    int16_t* target = (phase == 0) ? positive : negative;
+    for (uint8_t axis = 0; axis < 3; ++axis) {
+      target[axis] = le16(&raw[axis * 2]);
+    }
+  }
+
+  bus_.writeRegister(ACC_SELF_TEST, 0x00);
+  bus_.writeRegister(ACC_RANGE, savedRange);
+  configureDefaults();
+  if (!ok) return false;
+
+  // At +/-16 g one count is about 0.49 mg. The datasheet's minimum deflections
+  // are 1000 mg on x and y, 500 mg on z.
+  const float mgPerCount = 16000.0f / 32768.0f;
+  const float minimum[3] = {1000.0f, 1000.0f, 500.0f};
+  for (uint8_t axis = 0; axis < 3; ++axis) {
+    float difference =
+        (static_cast<float>(positive[axis]) - static_cast<float>(negative[axis])) *
+        mgPerCount;
+    if (difference < 0.0f) difference = -difference;
+    if (difference < minimum[axis]) return false;
+  }
+  return true;
+}
+
+bool BMI270::remapAxes(uint8_t xTo, bool xInvert, uint8_t yTo, bool yInvert,
+                       uint8_t zTo, bool zInvert) {
+  if ((lastInternalStatus_ & 0x0Fu) != INTERNAL_STATUS_INIT_OK) return false;
+  if (xTo > 2 || yTo > 2 || zTo > 2) return false;
+
+  uint8_t buffer[FEATURES_SIZE];
+  if (!readFeaturePage(PAGE_AXIS_MAP, buffer)) return false;
+
+  // Two bits of destination plus one of sign per axis, packed three to a byte
+  // with the last one spilling into the next.
+  const uint8_t xField = static_cast<uint8_t>((xTo & 0x03u) | (xInvert ? 0x04u : 0x00u));
+  const uint8_t yField = static_cast<uint8_t>((yTo & 0x03u) | (yInvert ? 0x04u : 0x00u));
+  const uint8_t zField = static_cast<uint8_t>((zTo & 0x03u) | (zInvert ? 0x04u : 0x00u));
+
+  buffer[OFF_AXIS_MAP] = static_cast<uint8_t>(xField | (yField << 3) |
+                                              ((zField & 0x03u) << 6));
+  buffer[OFF_AXIS_MAP + 1] = static_cast<uint8_t>(
+      (buffer[OFF_AXIS_MAP + 1] & 0xFEu) | ((zField >> 2) & 0x01u));
+  return writeFeaturePage(PAGE_AXIS_MAP, buffer);
+}
+
 }  // namespace nimu

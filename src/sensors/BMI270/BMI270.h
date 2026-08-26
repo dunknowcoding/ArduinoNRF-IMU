@@ -100,10 +100,90 @@ class BMI270 : public IMUSensor {
   void setWakeTimeoutMs(uint16_t ms) { wakeTimeoutMs_ = ms; }
   uint16_t wakeTimeoutMs() const { return wakeTimeoutMs_; }
 
-  // The BMI270's step counter, gesture and motion detectors all run on its
-  // internal core, so none of them exist until a configuration image has been
-  // loaded - see setConfigImage(). There is no API for them here because there
-  // is nothing to talk to without that image.
+  // ---- Advanced features -------------------------------------------------
+  //
+  // All of these run on the BMI270's internal core, so none of them exist
+  // until a configuration image has been loaded - see setConfigImage() - and
+  // every call below fails cleanly if begin() did not reach init_ok.
+  //
+  // Their register layout is not in the datasheet. FEATURES is a sixteen-byte
+  // window onto one of eight pages, and which page each feature lives on comes
+  // from the tables in Bosch's own bmi270.c; see BMI270_Registers.h.
+
+  enum class Feature : uint8_t {
+    AnyMotion,
+    NoMotion,
+    SignificantMotion,
+    StepDetector,
+    StepCounter,
+    StepActivity,
+    WristGesture,
+    WristWearWakeup
+  };
+
+  // Turn a feature on or off. The accelerometer must be running for any of
+  // them to do anything.
+  bool enableFeature(Feature feature, bool enable = true);
+
+  // Steps since the counter was last reset. Meaningless unless StepCounter is
+  // enabled; the counter needs a few strides before it reports anything at
+  // all, which is the algorithm being careful rather than a fault.
+  uint32_t stepCount();
+  bool resetStepCount();
+
+  enum class Activity : uint8_t { Still = 0, Walking = 1, Running = 2, Unknown = 3 };
+  Activity stepActivity();
+
+  // Any-motion fires while acceleration on any selected axis stays above the
+  // threshold for the duration; no-motion fires while it stays below.
+  //
+  // Threshold is in milli-g and duration in milliseconds. Both are quantised
+  // by the hardware: the threshold to 1/2048 g steps, the duration to 20 ms
+  // steps, with 11 and 13 bits respectively.
+  bool configureAnyMotion(uint16_t thresholdMg, uint16_t durationMs,
+                          bool x = true, bool y = true, bool z = true);
+  bool configureNoMotion(uint16_t thresholdMg, uint16_t durationMs,
+                         bool x = true, bool y = true, bool z = true);
+
+  // Which features have fired since this was last called. Cleared by reading,
+  // so call it once per pass and keep the result. Test it against the
+  // FEAT_INT_* masks in BMI270_Registers.h.
+  uint8_t featureInterrupts();
+
+  // Route feature interrupts to a physical pin. pin is 1 or 2, mask is any
+  // combination of the FEAT_INT_* values. Call configureInterruptPin() first
+  // to set that pin's electrical behaviour.
+  bool mapFeatureInterrupt(uint8_t pin, uint8_t mask);
+
+  // ---- FIFO ---------------------------------------------------------------
+
+  // Header mode tags each frame with what it contains and is what you want
+  // unless you have a reason otherwise; headerless mode packs frames tighter
+  // but you must know the enabled sensors to parse it.
+  bool configureFifo(bool accel, bool gyro, bool headerMode = true);
+  uint16_t fifoLength();
+  uint16_t readFifo(uint8_t* out, uint16_t maxBytes);
+  bool flushFifo();
+
+  // ---- Offsets and self-test ----------------------------------------------
+
+  // Accelerometer offsets are 8-bit two's complement, 3.9 mg per count.
+  bool setAccelOffset(int8_t x, int8_t y, int8_t z, bool enable = true);
+
+  // Gyroscope offsets are 10-bit two's complement, 0.061 dps per count.
+  bool setGyroOffset(int16_t x, int16_t y, int16_t z, bool enable = true);
+
+  // Drives the accelerometer against its own internal test signal and checks
+  // the deflection is within the datasheet's limits. Disturbs the sensor
+  // configuration, so it re-applies the defaults afterwards; keep the board
+  // still while it runs.
+  bool selfTestAccel();
+
+  // Reorder and invert the axes in hardware, so everything downstream -
+  // including the step counter and motion detectors - sees the board the way
+  // it is actually mounted. Each axis takes 0, 1 or 2 for x, y or z.
+  bool remapAxes(uint8_t xTo, bool xInvert, uint8_t yTo, bool yInvert,
+                 uint8_t zTo, bool zInvert);
 
   bool beginSPI(SPIClass& spi, uint8_t csPin) override;
   uint8_t whoAmI() override;
@@ -170,6 +250,15 @@ class BMI270 : public IMUSensor {
   // Wakes the part and polls until it has a sample, keeping the bus busy
   // throughout. False if nothing arrived within the timeout.
   bool wakeAndAwaitData(uint16_t timeoutMs);
+
+  // Read a whole sixteen-byte FEATURES page, and write one back. Feature
+  // configuration is always read-modify-write of the entire page, which keeps
+  // every write 16-bit word aligned as section 4.8.1 requires.
+  bool readFeaturePage(uint8_t page, uint8_t* out);
+  bool writeFeaturePage(uint8_t page, const uint8_t* in);
+  bool setFeatureBit(uint8_t page, uint8_t index, uint8_t mask, bool enable);
+  bool configureMotion(uint8_t page, uint8_t offset, uint16_t thresholdMg,
+                       uint16_t durationMs, bool x, bool y, bool z);
 
   // Reads the accelerometer, gyroscope and temperature registers in one go.
   bool readSampleRegisters(uint8_t* a, uint8_t* g, uint8_t* t);
